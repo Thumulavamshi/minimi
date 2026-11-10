@@ -148,12 +148,14 @@ export function recall(store: MemoryStore, input: RecallInput): Recall {
     }
   }
 
-  // The topic search runs only when the message points at the past. For an
-  // ordinary question the timeline in the system prompt is context enough.
+  // The topic search runs when the message points at the past but its date
+  // found nothing (or it gave no date). When the date did find turns, the user
+  // has already identified the conversation, and loosely related turns from
+  // other days would only dilute it.
   const topicHits: Turn[] = [];
-  if (pointsBack && words.length > 0) {
-    for (const turn of store.search(words, MAX_TOPIC_HITS + seen.size)) {
-      if (seen.has(turn.id) || topicHits.length >= MAX_TOPIC_HITS) continue;
+  if (pointsBack && hits.length === 0 && words.length > 0) {
+    for (const turn of store.search(words, MAX_TOPIC_HITS)) {
+      if (seen.has(turn.id)) continue;
       seen.add(turn.id);
       topicHits.push(turn);
       hits.push({ turn, reason: "related by topic" });
