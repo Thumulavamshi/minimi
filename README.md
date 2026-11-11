@@ -24,6 +24,13 @@ npm run dev
 
 Open http://localhost:3000.
 
+## Groq's free tier
+
+The agent runs on Groq's free tier, with two limits worth knowing:
+
+- **One request may use about 8,000 tokens**, prompt and reply together. The agent sizes its prompt to fit, so on the free tier it replays only the last couple of turns of a chat and a short timeline. On a paid tier, set `TOKEN_BUDGET` in `.env` to your per-minute allowance to give it more.
+- **There is a daily token allowance, and web research uses it quickly.** The pages the model reads while searching count as tokens. A question that re-checks four prices can use over 100,000 tokens, so a handful of research questions can exhaust a free day.
+
 ## Try the memory without waiting a week
 
 The agent starts with an empty memory, and says so if you ask about a day it has no record of. To try questions about the past straight away, load three dated demo conversations:
@@ -52,18 +59,18 @@ Each source under an answer carries a mark from the app's link check: ✓ return
 npm run eval
 ```
 
-Runs 46 scenarios through date reading and memory lookup. No model or network is involved, so the result is exact. Current result, from `eval/recall-results.md`:
+Runs 47 scenarios through date reading and memory lookup. No model or network is involved, so the result is exact. Current result, from `eval/recall-results.md`:
 
 | Category | Passed |
 |---|---|
-| Exact date | 8 / 8 |
+| Exact date | 9 / 9 |
 | Relative date | 8 / 8 |
 | Ambiguous date | 5 / 5 |
 | Topic recall | 6 / 8 |
 | Missing history | 6 / 6 |
 | No recall needed | 7 / 7 |
 | Timezone | 4 / 4 |
-| **Total** | **44 / 46** |
+| **Total** | **45 / 47** |
 
 The two misses are paraphrases that share no word with the stored conversation ("notebook computer" for "laptop"). Keyword lookup cannot find those; the model can, from the timeline of earlier conversations it is always given.
 

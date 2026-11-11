@@ -19,6 +19,13 @@ export const config = {
    * Low is the default because Groq's free tier allows few tokens per minute.
    */
   effort: (["low", "medium", "high"] as const).find((e) => e === process.env.AGENT_EFFORT) ?? "low",
+  /**
+   * The most tokens one request may use, prompt and reply together. Groq
+   * rejects a request that asks for more than the account's per-minute
+   * allowance, which is 8,000 on the free tier. The prompt is sized to fit.
+   * Raise this on a paid tier to give the agent more history and longer replies.
+   */
+  tokenBudget: Math.max(4000, Number(process.env.TOKEN_BUDGET) || 8000),
   /** A small, fast model that summarises each finished turn for memory. */
   digestModel: process.env.DIGEST_MODEL || "openai/gpt-oss-20b",
   dbPath: process.env.DB_PATH || "data/memory.db",

@@ -78,6 +78,7 @@ const LOOKUP = /Memory lookup/;
 export const SCENARIOS: Scenario[] = [
   // A date written out: the right day's conversation, and only that.
   { category: "Exact date", name: "day and month", message: "What did I ask you on 3 November?", recalled: ["node"], context: [QUOTED] },
+  { category: "Exact date", name: "'still correct today' is not a second date (brief's prompt)", message: "What did I ask you on 3 November? Is your answer still correct today?", recalled: ["node"] },
   { category: "Exact date", name: "short month", message: "What did we talk about on 9 Nov?", recalled: ["crm"] },
   { category: "Exact date", name: "month first, ordinal", message: "What did I ask on November 5th?", recalled: ["dal"] },
   { category: "Exact date", name: "ISO date", message: "Show me what I asked on 2026-10-24", recalled: ["laptop"] },

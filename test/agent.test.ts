@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { setImmediate as tick } from "node:timers/promises";
 import { test } from "node:test";
 import type Groq from "groq-sdk";
-import { historyWindow } from "../src/agent/prompt.ts";
+import { estimateTokens, historyWindow } from "../src/agent/prompt.ts";
 import { StreamTranslator, type AgentEvent } from "../src/agent/stream.ts";
 import { runTurn, type TurnEvent } from "../src/agent/turn.ts";
 import type { Config } from "../src/config.ts";
 import { MemoryStore, type Digest, type Turn } from "../src/memory/store.ts";
 
-const CONFIG: Config = { port: 0, model: "test-model", effort: "low", digestModel: "test-digest-model", dbPath: ":memory:", hasApiKey: true, debugStream: false };
+const CONFIG: Config = { port: 0, model: "test-model", effort: "low", tokenBudget: 8000, digestModel: "test-digest-model", dbPath: ":memory:", hasApiKey: true, debugStream: false };
 
 const NEON = "https://neon.com/pricing";
 const ANSWER = `Neon Launch is $19/month [1](${NEON}).`;
@@ -45,6 +45,7 @@ interface Request {
   stream?: boolean;
   messages: Array<{ role: string; content: string }>;
   tools?: unknown;
+  max_completion_tokens?: number;
 }
 
 /** A stand-in for the Groq client that replays scripted replies and records each chat request. */
@@ -191,7 +192,7 @@ test("a new conversation sees earlier ones through the timeline", async () => {
   await turn(store, client, "Hello again");
   const system = requests[1]!.messages[0]!.content;
   assert.match(system, /<earlier_conversations>/);
-  assert.match(system, /stated then: Neon Launch costs \$19\/month/);
+  assert.match(system, /asked: "What does Neon cost\?" \| answered: Asked for Neon's price; it was \$19\/month\./);
 });
 
 test("a summary that comes back malformed is dropped, and the turn is still stored", async () => {
@@ -215,10 +216,31 @@ test("a failure before any text leaves nothing behind", async () => {
   assert.equal(store.listConversations().length, 0);
 });
 
-test("long conversations replay a window whose start moves in steps", () => {
-  const turns = (n: number) => Array.from({ length: n }, (_, i) => ({ id: String(i) }) as Turn);
-  assert.equal(historyWindow(turns(40)).length, 40);
-  assert.equal(historyWindow(turns(41))[0]?.id, "10");
-  assert.equal(historyWindow(turns(49))[0]?.id, "10", "unchanged for ten turns");
-  assert.equal(historyWindow(turns(50))[0]?.id, "20");
+test("history keeps the most recent turns that fit the token allowance", () => {
+  const turns = Array.from({ length: 6 }, (_, i) => ({ id: String(i), contextNote: "", question: "q".repeat(350), answer: "a".repeat(350), status: "complete" }) as Turn);
+  const perTurn = estimateTokens(`<context>\n\n</context>\n\n${"q".repeat(350)}`) + estimateTokens("a".repeat(350));
+  assert.deepEqual(historyWindow(turns, perTurn * 2 + 1).map((t) => t.id), ["4", "5"]);
+  assert.equal(historyWindow(turns, 10).length, 0);
+  assert.equal(historyWindow(turns, 1_000_000).length, 6);
+});
+
+test("a request never asks for more tokens than the budget, however long the history", async () => {
+  const store = new MemoryStore(":memory:");
+  // Thirty earlier conversations with long answers, then a long conversation.
+  for (let i = 0; i < 30; i++) {
+    store.createConversation({ id: `old-${i}`, title: "old", createdAt: 1000 + i, updatedAt: 1000 + i });
+    store.saveTurn({ id: `old-turn-${i}`, conversationId: `old-${i}`, createdAt: 1000 + i, question: `Question ${i} about Postgres hosting prices`, contextNote: "", answer: "Long answer. ".repeat(300), sources: [], searches: [], status: "complete", digest: null, stats: {} });
+  }
+  const replies = Array.from({ length: 6 }, () => searchReply());
+  const { client, requests } = fakeClient(replies);
+  let conversationId: string | undefined;
+  for (let i = 0; i < 6; i++) {
+    const events = await turn(store, client, `You told me about Postgres hosting prices before. ${"More detail please. ".repeat(40)}`, conversationId);
+    conversationId = events.find((e) => e.type === "start")!.conversationId;
+  }
+  for (const request of requests) {
+    const prompt = request.messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+    assert.ok(prompt + request.max_completion_tokens! <= CONFIG.tokenBudget, `request asks for ${prompt + request.max_completion_tokens!} tokens`);
+    assert.ok(request.max_completion_tokens! >= 1024);
+  }
 });

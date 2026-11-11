@@ -29,7 +29,9 @@ const BROWSER_MARK = /\s?【[^】]*】/g;
 /** The longest run of text held back while waiting for a mark to close. */
 const MAX_HELD = 80;
 /** How many pages to list as sources when the answer contains no links. */
-const FALLBACK_SOURCES = 6;
+const FALLBACK_SOURCES = 8;
+/** The browsing tool appends its viewport to page titles: "supabase.com - viewing lines [0 - 339] of 339". */
+const VIEWPORT_SUFFIX = /\s*[-–]\s*viewing lines.*$/i;
 
 /** A page address reduced to what identifies the page, so trivially different spellings match. */
 export function pageKey(url: string): string {
@@ -93,7 +95,8 @@ export class StreamTranslator {
       for (const result of results) {
         if (!result.url || this.pages.has(result.url)) continue;
         const excerpt = result.content?.replace(/\s+/g, " ").trim().slice(0, 280);
-        this.pages.set(result.url, { title: result.title || hostname(result.url), excerpt: excerpt || undefined });
+        const title = result.title?.replace(VIEWPORT_SUFFIX, "").trim();
+        this.pages.set(result.url, { title: title || hostname(result.url), excerpt: excerpt || undefined });
       }
       const sites = [...new Set(results.flatMap((result) => (result.url ? [hostname(result.url)] : [])))];
       if (sites.length === 0) return;
@@ -157,7 +160,12 @@ export class StreamTranslator {
       this.addSource({ url, title, origin: this.originOf(url, fromMemory), excerpt: page?.excerpt });
     }
     if (this.sources.length === 0) {
-      for (const [url, page] of [...this.pages].slice(0, FALLBACK_SOURCES)) {
+      // One page per site first, so an answer that drew on several sites
+      // does not list five pages from whichever was searched first.
+      const pages = [...this.pages];
+      const firstPerSite = pages.filter(([url], i) => pages.findIndex(([other]) => hostname(other) === hostname(url)) === i);
+      const rest = pages.filter((page) => !firstPerSite.includes(page));
+      for (const [url, page] of [...firstPerSite, ...rest].slice(0, FALLBACK_SOURCES)) {
         this.addSource({ url, title: page.title, origin: "search", excerpt: page.excerpt });
       }
     }

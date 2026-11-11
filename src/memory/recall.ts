@@ -66,11 +66,13 @@ export interface RecallInput {
   timezone: string;
   /** Turns already replayed in full to the model as this conversation's history. */
   inContext: ReadonlySet<string>;
+  /** Roughly how many characters of recalled turns may be quoted. Defaults to generous. */
+  maxChars?: number;
 }
 
 const MAX_DATE_HITS = 6;
 const MAX_TOPIC_HITS = 3;
-const ANSWER_BUDGET = 2400;
+const ANSWER_BUDGET = 1600;
 
 /**
  * Wording that points back at an earlier conversation: "I asked", "we
@@ -127,8 +129,14 @@ export function recall(store: MemoryStore, input: RecallInput): Recall {
   /** Whether any turn found by date shares a topic word with the message. */
   let dateHitOnTopic = false;
 
+  // In "What did I ask on 3 November? Is it still correct today?", "today" is
+  // about the present, not a second day to look up. A phrase that reaches the
+  // present is only looked up when it is the only time the message mentions.
+  const namesPastDate = refs.some((ref) => ref.candidates[0]!.endMs <= input.nowMs);
+
   for (const ref of refs) {
     const reachesNow = ref.candidates[0]!.endMs > input.nowMs;
+    if (reachesNow && namesPastDate) continue;
     // Look at every reading of the phrase, not just the likeliest.
     const withRecords = ref.candidates.flatMap((range, i) => {
       // Stop at the present so that "today" cannot match the question being asked.
@@ -203,7 +211,15 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max).trimEnd()} […]`;
 }
 
-function renderTurn(turn: Turn, input: RecallInput, inFull: boolean): string {
+/** Quotes a past turn, in full while space remains and in one line after that. */
+function renderTurn(turn: Turn, input: RecallInput, wantFull: boolean, space: { left: number }): string {
+  const inFull = wantFull && space.left > 0;
+  const text = renderTurnText(turn, input, inFull);
+  if (inFull) space.left -= text.length;
+  return text;
+}
+
+function renderTurnText(turn: Turn, input: RecallInput, inFull: boolean): string {
   const when = formatDateTime(turn.createdAt, input.timezone);
   if (!inFull) return `  - ${when}: "${clip(turn.question, 160)}"`;
   if (input.inContext.has(turn.id)) {
@@ -250,6 +266,7 @@ export function renderContext(result: Recall, input: RecallInput): string {
     "Memory lookup (run automatically; it shows what was said at the time, which is not evidence of what is true now):",
   );
   const flagged = new Set<string>();
+  const space = { left: input.maxChars ?? 24_000 };
   for (const lookup of result.dateLookups) {
     if (lookup.ambiguous && !flagged.has(lookup.phrase)) {
       flagged.add(lookup.phrase);
@@ -264,7 +281,7 @@ export function renderContext(result: Recall, input: RecallInput): string {
           ? ` (chosen by topic; "${lookup.phrase}" could also mean ${lookup.otherDates.join(" or ")}, which has records on other topics)`
           : "";
       lines.push(`- ${lookup.range.label}${note}: ${lookup.hits.length} recorded turn(s).`);
-      for (const turn of lookup.hits) lines.push(renderTurn(turn, input, result.pointsBack && !lookup.ambiguous));
+      for (const turn of lookup.hits) lines.push(renderTurn(turn, input, result.pointsBack && !lookup.ambiguous, space));
       continue;
     }
     const near = [describeNearest(lookup.nearest?.before ?? null, input.timezone), describeNearest(lookup.nearest?.after ?? null, input.timezone)]
@@ -274,7 +291,7 @@ export function renderContext(result: Recall, input: RecallInput): string {
   }
   if (result.topicHits.length > 0) {
     lines.push("- Related by topic, from other dates:");
-    for (const turn of result.topicHits) lines.push(renderTurn(turn, input, true));
+    for (const turn of result.topicHits) lines.push(renderTurn(turn, input, true, space));
   }
   return lines.join("\n");
 }

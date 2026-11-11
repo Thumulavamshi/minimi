@@ -33,11 +33,11 @@ message → recall (code, ~1 ms) → assemble prompt → model + web search (str
 
 **Everything is inspectable.** Under each answer: the dates read, turns recalled, claims to re-check, searches run, the link check, and the exact context the model received.
 
-**Speed.** No model call runs before the answer starts. Each turn's context block is stored and replayed verbatim, so the prompt before the new message is byte-identical to the previous request (tested), which is what provider-side prompt caching needs. The page shows the cached-token count per answer, so the benefit is observed, not assumed.
+**Speed and size.** No model call runs before the answer starts. Each turn's context block is stored and replayed verbatim, so while a chat's history fits, the prompt before the new message is byte-identical to the previous request (tested), which is what provider-side caching needs; the page shows the cached-token count per answer. Groq's free tier caps a request at 8,000 tokens, so the prompt is budgeted: the reply and recalled memory are reserved first, the timeline gets a fixed slice, and history takes the rest (`TOKEN_BUDGET` raises it).
 
 ## Evaluation
 
-`npm run eval` runs 46 scenarios through date reading and recall with no model, so results are exact: **44 / 46** (`eval/recall-results.md`). The two misses are paraphrases sharing no word with the stored turn; the timeline exists for those. Building the set exposed two bugs, now fixed: a date whose only conversation was off-topic hid the right one, and filler words matched unrelated turns. `npm run eval:live` asks nine questions of the live model and web and checks behaviour with rules: right day recalled, gaps admitted, no needless searches, links grounded.
+`npm run eval` runs 47 scenarios through date reading and recall with no model, so results are exact: **45 / 47** (`eval/recall-results.md`). The two misses are paraphrases sharing no word with the stored turn; the timeline exists for those. Building the set and testing live exposed three bugs, now fixed: a date whose only conversation was off-topic hid the right one, filler words matched unrelated turns, and "still correct today" was read as a second date to look up. `npm run eval:live` asks nine questions of the live model and web and checks behaviour with rules: right day recalled, gaps admitted, no needless searches, links grounded.
 
 ## Considered and rejected
 

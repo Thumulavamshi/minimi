@@ -128,7 +128,7 @@ test("the timeline lists other conversations and stays fixed for a conversation"
   const store = storeWith(POSTGRES, CRM);
   const current = { id: "now", title: "New", createdAt: NOW, updatedAt: NOW };
   store.createConversation(current);
-  const before = renderTimeline(store, current, TZ);
+  const before = renderTimeline(store, current, TZ, 10_000);
   assert.match(before, /- Tue 3 Nov 2026, 11:30 \| asked: "Which managed Postgres hosting/);
   assert.ok(before.indexOf("Tue 3 Nov") < before.indexOf("Mon 9 Nov"), "oldest first");
 
@@ -136,5 +136,9 @@ test("the timeline lists other conversations and stays fixed for a conversation"
   store.saveTurn(turn("later", "2026-11-10T09:05:00Z", "And MySQL?", "PlanetScale.", "now"));
   store.createConversation({ id: "c-other", title: "Other", createdAt: NOW + 1, updatedAt: NOW + 1 });
   store.saveTurn(turn("other", "2026-11-10T09:06:00Z", "Unrelated", "Answer."));
-  assert.equal(renderTimeline(store, current, TZ), before);
+  assert.equal(renderTimeline(store, current, TZ, 10_000), before);
+  // With little space, only the most recent line is kept.
+  const tight = renderTimeline(store, current, TZ, 150);
+  assert.match(tight, /Mon 9 Nov/);
+  assert.doesNotMatch(tight, /Tue 3 Nov/);
 });

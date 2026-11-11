@@ -28,20 +28,30 @@ export function timelineLine(turn: Turn, timezone: string): string {
   const digest = turn.digest;
   if (!digest) {
     // The digest is written just after the answer. Until then, fall back to the raw text.
-    return `- ${when} | asked: "${clip(turn.question, 160)}" | answered: ${clip(turn.answer, 220) || "(no answer recorded)"}`;
+    return `- ${when} | asked: "${clip(turn.question, 140)}" | answered: ${clip(turn.answer, 200) || "(no answer recorded)"}`;
   }
-  const facts = digest.claims.length ? ` | stated then: ${digest.claims.map((c) => clip(c.text, 140)).join("; ")}` : "";
-  return `- ${when} | asked: "${clip(turn.question, 160)}" | answered: ${clip(digest.summary, 300)}${facts}`;
+  // The individual claims are not listed here: they are handed over in full
+  // when the turn is recalled, and repeating them for every turn costs tokens.
+  return `- ${when} | asked: "${clip(turn.question, 140)}" | answered: ${clip(digest.summary, 240)}`;
 }
 
-export function renderTimeline(store: MemoryStore, conversation: Conversation, timezone: string): string {
+export function renderTimeline(store: MemoryStore, conversation: Conversation, timezone: string, maxChars: number): string {
   const turns = store.turnsBefore(conversation.createdAt, conversation.id, TIMELINE_TURNS);
-  if (turns.length === 0) return "";
+  // Keep the most recent lines that fit the space allowed.
+  const lines: string[] = [];
+  let used = 0;
+  for (const turn of turns.reverse()) {
+    const line = timelineLine(turn, timezone);
+    if (used + line.length > maxChars) break;
+    used += line.length;
+    lines.unshift(line);
+  }
+  if (lines.length === 0) return "";
   return [
     "<earlier_conversations>",
-    `Summaries of the user's ${turns.length} most recent earlier turns with you, oldest first. Times are in ${timezone}.`,
+    `Summaries of the user's ${lines.length} most recent earlier turns with you, oldest first. Times are in ${timezone}.`,
     "Each line records what was said at the time. Prices, versions and other facts may have changed since.",
-    ...turns.map((turn) => timelineLine(turn, timezone)),
+    ...lines,
     "</earlier_conversations>",
   ].join("\n");
 }

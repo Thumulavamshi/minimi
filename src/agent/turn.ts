@@ -14,7 +14,7 @@ import { recall, renderContext } from "../memory/recall.ts";
 import type { Conversation, MemoryStore, Turn, TurnStatus } from "../memory/store.ts";
 import { renderTimeline } from "../memory/timeline.ts";
 import { formatDateTime, nowMs } from "../time/zoned.ts";
-import { assistantContent, historyWindow, SYSTEM_PROMPT, userContent } from "./prompt.ts";
+import { assistantContent, estimateTokens, historyWindow, planBudget, SYSTEM_PROMPT, userContent } from "./prompt.ts";
 import { StreamTranslator, type AgentEvent } from "./stream.ts";
 
 type MessageParam = Groq.Chat.Completions.ChatCompletionMessageParam;
@@ -95,7 +95,15 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
     store.createConversation(conversation);
   }
   const earlier = store.turnsInConversation(conversation.id);
-  const history = historyWindow(earlier);
+
+  // One request may use only so many tokens (8,000 on Groq's free tier), so
+  // the prompt is sized to fit. The timeline is rendered first because its
+  // size is fixed for the conversation; history takes what the rest leaves.
+  const budget = planBudget(config.tokenBudget);
+  const timeline = renderTimeline(store, conversation, timezone, budget.timelineChars);
+  const systemPrompt = timeline ? `${SYSTEM_PROMPT}\n\n${timeline}` : SYSTEM_PROMPT;
+  const fixedTokens = estimateTokens(systemPrompt) + estimateTokens(request.message) + Math.ceil(budget.recallChars / 3.5);
+  const history = historyWindow(earlier, budget.prompt - fixedTokens);
 
   // 1. Recall.
   const recallInput = {
@@ -103,6 +111,7 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
     nowMs: startedAt,
     timezone,
     inContext: new Set(history.map((t) => t.id)),
+    maxChars: budget.recallChars,
   };
   const recalled = recall(store, recallInput);
   const contextNote = renderContext(recalled, recallInput);
@@ -122,15 +131,16 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
   //    in each request is the final user message. Groq caches a repeated
   //    prompt prefix automatically on models that support it, so a stable
   //    prefix makes follow-up turns cheaper and faster.
-  const timeline = renderTimeline(store, conversation, timezone);
   const messages: MessageParam[] = [
-    { role: "system", content: timeline ? `${SYSTEM_PROMPT}\n\n${timeline}` : SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     ...history.flatMap((turn): MessageParam[] => [
       { role: "user", content: userContent(turn.contextNote, turn.question) },
       { role: "assistant", content: assistantContent(turn) },
     ]),
     { role: "user", content: userContent(contextNote, request.message) },
   ];
+
+  const promptTokens = messages.reduce((sum, m) => sum + estimateTokens(String(m.content)), 0);
 
   // 3. Answer.
   let firstTokenMs: number | undefined;
@@ -151,8 +161,8 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
         model: config.model,
         messages,
         stream: true,
-        // Kept modest: the free tier counts requested output against a small per-minute budget.
-        max_completion_tokens: 4096,
+        // Whatever the prompt did not use, up to a ceiling, is offered to the reply.
+        max_completion_tokens: Math.min(4096, Math.max(1024, config.tokenBudget - promptTokens - 150)),
         reasoning_effort: config.effort,
         // The one tool. Groq runs it on its side; "auto" leaves the model free
         // to answer from memory or general knowledge without searching.

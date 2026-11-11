@@ -58,13 +58,42 @@ export function assistantContent(turn: Turn): string {
   return turn.status === "complete" ? turn.answer : `${turn.answer}\n\n(This reply was interrupted before it finished.)`;
 }
 
+/** A deliberately high estimate of a text's token count (URLs and tables tokenise badly). */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
+}
+
 /**
- * How much of a long conversation is replayed in full. The window's start
- * moves in steps of ten turns rather than one, so the replayed prefix is
- * identical from request to request and the prompt cache keeps hitting.
- * Turns that fall out of the window stay reachable through recall.
+ * How one request's token budget is divided. The reply and the recalled
+ * memory get a reserved share first, because they matter most; the timeline
+ * gets a fixed slice; the conversation's own history takes what is left.
  */
-export function historyWindow(turns: Turn[]): Turn[] {
-  const start = turns.length <= 40 ? 0 : Math.floor((turns.length - 30) / 10) * 10;
+export function planBudget(tokenBudget: number) {
+  const reply = Math.min(4096, Math.max(1500, Math.round(tokenBudget * 0.22)));
+  return {
+    /** Tokens kept free for the model's reply (including its reasoning). */
+    reply,
+    /** Characters of recalled memory placed before the user's message. */
+    recallChars: Math.min(24_000, Math.round(tokenBudget * 0.22 * 3.5)),
+    /** Characters of timeline in the system prompt. */
+    timelineChars: Math.min(20_000, Math.round(tokenBudget * 0.09 * 3.5)),
+    /** Tokens available to everything in the prompt. */
+    prompt: tokenBudget - reply - 150,
+  };
+}
+
+/**
+ * The most recent turns of this conversation that fit in `tokenAllowance`.
+ * Older turns are dropped from the replay but stay reachable through recall.
+ */
+export function historyWindow(turns: Turn[], tokenAllowance: number): Turn[] {
+  let used = 0;
+  let start = turns.length;
+  while (start > 0) {
+    const turn = turns[start - 1]!;
+    used += estimateTokens(userContent(turn.contextNote, turn.question)) + estimateTokens(assistantContent(turn));
+    if (used > tokenAllowance) break;
+    start--;
+  }
   return turns.slice(start);
 }
