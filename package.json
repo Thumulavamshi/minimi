@@ -15,8 +15,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^1.8.0",
     "dompurify": "^3.4.17",
+    "groq-sdk": "^1.6.0",
     "marked": "^18.2.0",
     "tsx": "^4.23.15",
     "zod": "^4.6.7"

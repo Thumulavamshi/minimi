@@ -18,7 +18,7 @@ message → recall (code, <1 ms) → assemble prompt → model + web search (str
 
 1. **Recall** (`src/memory/recall.ts`, `src/time/temporal.ts`). Code resolves every time phrase to a date range in the user's timezone, then looks up turns from those dates. If the message points at the past but the date finds nothing, a keyword index (SQLite FTS5) searches by topic.
 2. **Assemble** (`src/agent/turn.ts`). The prompt is: fixed instructions, a one-line-per-turn timeline of earlier conversations, this conversation's history, then the new message behind a `<context>` block holding the current time, the resolved dates and the recalled turns.
-3. **Answer**. One streamed model call. The model decides whether to search; citations are written into the answer as numbered links.
+3. **Answer**. One streamed call to Groq's `groq/compound`, with every built-in tool except web search switched off. The model decides whether to search and cites pages as numbered links in its answer.
 4. **Remember** (`src/memory/store.ts`, `digest.ts`). The turn is stored with its timestamp, sources and the exact context it was given. A small model then writes a summary card (title, entities, facts that could change) in the background.
 
 ## Decisions
@@ -33,15 +33,15 @@ message → recall (code, <1 ms) → assemble prompt → model + web search (str
 
 **Then versus now.** Memory is authoritative about what was said, never about what is true. The prompt makes the model restate the old claim, re-search each part at its primary source, and report changed / unchanged / could not verify.
 
-**Speed.** No model call runs before the answer starts. The prompt is ordered so everything before the new message is byte-identical to the previous request and served from cache; that is why each turn's context block is stored and replayed verbatim. Search results are not replayed in later turns; the answer and its links are.
+**Speed.** No model call runs before the answer starts, and Groq's inference is fast. The prompt is ordered so everything before the new message is byte-identical to the previous request, which lets the provider's automatic prompt caching apply; that is why each turn's context block is stored and replayed verbatim. Search results are not replayed in later turns; the answer and its links are.
 
-**One key.** Claude's built-in web search means one API key and one streamed request, with citations tied to the passages they support.
+**One key.** Groq's compound system runs the searches on its side, so there is one API key and one streamed request. The cost: citations are links the model writes, not passage-level citations checked by the API. The prompt restricts links to pages from the search results, and the source list is read back out of the answer.
 
 ## Considered and rejected
 
 - **A model call to route or rewrite each message.** Adds latency to every turn to save tokens on a few.
 - **A vector database.** A second key, an index to keep in sync, and worse precision than a date for "on 3 November".
-- **My own search stack (search API + page fetcher + reranker).** More code and a second key, without better grounding than the built-in tool.
+- **My own search stack (search API + page fetcher + reranker).** More control over grounding, but a second key and much more code. It is the first thing I would revisit.
 - **An agent framework.** The loop is about 200 lines; a framework would hide the prompt assembly, which is the design.
 - **Re-checking stale answers automatically.** It spends the user's money unasked. The start screen instead offers stale answers as one-click prompts.
 
@@ -50,4 +50,4 @@ message → recall (code, <1 ms) → assemble prompt → model + web search (str
 - **A graded eval set**: scripted histories replayed with a simulated clock (`AGENT_NOW` exists for this), scored on recall accuracy, honesty on empty dates, and correctness of the "changed" verdicts.
 - **A claim ledger**: store each volatile fact as a row with its source, so re-checks diff claim by claim and can run as a scheduled watch that speaks up only when something changed.
 - **Recall at larger scale**: embeddings as a third layer once history outgrows the timeline.
-- **Latency tuning**: measure effort levels per question type and drop to low effort for turns that need no search.
+- **Verified citations**: check each cited URL against the search results returned for that turn, and flag any link that was not among them.

@@ -3,32 +3,22 @@
  * and collects what will be stored: the answer text, its sources, the queries.
  *
  * Kept free of network and storage code so it can be tested with hand-written
- * events.
+ * chunks.
  */
-import type Anthropic from "@anthropic-ai/sdk";
+import type Groq from "groq-sdk";
 import type { Source } from "../memory/store.ts";
 
-type StreamEvent = Anthropic.Beta.Messages.BetaRawMessageStreamEvent;
+type Chunk = Groq.Chat.Completions.ChatCompletionChunk;
+type ExecutedTool = NonNullable<Chunk["choices"][number]["delta"]["executed_tools"]>[number];
 
 export type AgentEvent =
   /** A step the user can watch while waiting. */
-  | { type: "activity"; kind: "thinking" | "searching" | "reading" | "search_failed"; detail?: string }
+  | { type: "activity"; kind: "thinking" | "searching" | "reading"; detail?: string }
   | { type: "text"; text: string }
   | { type: "source"; source: Source };
 
-interface OpenBlock {
-  kind: "text" | "tool" | "other";
-  /** For a tool call: its name and its input JSON as it streams in. */
-  toolName?: string;
-  inputJson?: string;
-  /** For a text block: the pages the API says this text was drawn from. */
-  citedUrls?: Array<{ url: string; title: string }>;
-}
-
-/** Brackets and spaces would break a Markdown link, so they are escaped. */
-function linkSafe(url: string): string {
-  return url.replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/\s/g, "%20");
-}
+/** A numbered or named Markdown link: [1](https://…) or [Neon](https://…). */
+const LINK = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
 
 function hostname(url: string): string {
   try {
@@ -42,103 +32,57 @@ export class StreamTranslator {
   answer = "";
   readonly sources: Source[] = [];
   readonly searches: string[] = [];
-  private blocks = new Map<number, OpenBlock>();
+  /** Page titles seen in search results, used to label the sources. */
+  private readonly titles = new Map<string, string>();
+  /** Searches are reported in pieces; these record what has been shown already. */
+  private readonly announced = new Set<number>();
+  private readonly read = new Set<number>();
+  private thinking = false;
   private readonly emit: (event: AgentEvent) => void;
 
   constructor(emit: (event: AgentEvent) => void) {
     this.emit = emit;
   }
 
-  handle(event: StreamEvent): void {
-    switch (event.type) {
-      case "message_start":
-        // A turn that pauses and resumes arrives as several messages, each
-        // numbering its blocks from zero.
-        this.blocks = new Map();
-        break;
-      case "content_block_start":
-        this.blocks.set(event.index, this.open(event.content_block));
-        break;
-      case "content_block_delta": {
-        const block = this.blocks.get(event.index);
-        const delta = event.delta;
-        if (delta.type === "text_delta") {
-          this.write(delta.text);
-        } else if (delta.type === "input_json_delta" && block) {
-          block.inputJson = (block.inputJson ?? "") + delta.partial_json;
-        } else if (delta.type === "citations_delta" && block && delta.citation.type === "web_search_result_location") {
-          (block.citedUrls ??= []).push({ url: delta.citation.url, title: delta.citation.title ?? hostname(delta.citation.url) });
-        }
-        break;
+  handle(chunk: Chunk): void {
+    const delta = chunk.choices[0]?.delta;
+    if (!delta) return;
+    if (delta.reasoning && !this.thinking) {
+      this.thinking = true;
+      this.emit({ type: "activity", kind: "thinking" });
+    }
+    for (const tool of delta.executed_tools ?? []) this.tool(tool);
+    if (delta.content) this.write(delta.content);
+  }
+
+  /** A search arrives first as a query, then again with its results. */
+  private tool(tool: ExecutedTool): void {
+    if (!this.announced.has(tool.index)) {
+      this.announced.add(tool.index);
+      const query = this.queryFrom(tool.arguments);
+      if (query) this.searches.push(query);
+      this.emit({ type: "activity", kind: "searching", detail: query ?? undefined });
+    }
+    const results = tool.search_results?.results ?? [];
+    if (results.length > 0 && !this.read.has(tool.index)) {
+      this.read.add(tool.index);
+      for (const result of results) {
+        if (result.url && result.title) this.titles.set(result.url, result.title);
       }
-      case "content_block_stop": {
-        const block = this.blocks.get(event.index);
-        if (block) this.close(block);
-        break;
-      }
+      const sites = [...new Set(results.flatMap((result) => (result.url ? [hostname(result.url)] : [])))];
+      const shown = sites.slice(0, 4).join(", ");
+      this.emit({ type: "activity", kind: "reading", detail: sites.length > 4 ? `${shown} and ${sites.length - 4} more` : shown });
     }
   }
 
-  private open(block: Extract<StreamEvent, { type: "content_block_start" }>["content_block"]): OpenBlock {
-    switch (block.type) {
-      case "thinking":
-        this.emit({ type: "activity", kind: "thinking" });
-        return { kind: "other" };
-      case "text":
-        return { kind: "text" };
-      case "server_tool_use":
-        // The query is not known until the tool input has finished streaming.
-        this.emit({ type: "activity", kind: "searching" });
-        return { kind: "tool", toolName: block.name, inputJson: "" };
-      case "web_search_tool_result":
-        // A list means results; a single object means the search failed.
-        if (Array.isArray(block.content)) {
-          const sites = [...new Set(block.content.map((result) => hostname(result.url)))];
-          const shown = sites.slice(0, 4).join(", ");
-          this.emit({ type: "activity", kind: "reading", detail: sites.length > 4 ? `${shown} and ${sites.length - 4} more` : shown });
-        } else {
-          this.emit({ type: "activity", kind: "search_failed", detail: block.content.error_code });
-        }
-        return { kind: "other" };
-      default:
-        return { kind: "other" };
-    }
-  }
-
-  private close(block: OpenBlock): void {
-    if (block.kind === "tool" && block.toolName === "web_search") {
-      const query = this.queryFrom(block.inputJson);
-      if (query) {
-        this.searches.push(query);
-        this.emit({ type: "activity", kind: "searching", detail: query });
-      }
-    }
-    if (block.kind === "text" && block.citedUrls?.length) {
-      // Append one numbered link per page this passage was drawn from. Writing
-      // them into the text means the stored answer carries its own evidence.
-      const numbers = [...new Set(block.citedUrls.map((cited) => this.sourceNumber(cited.url, cited.title)))];
-      const byNumber = new Map(this.sources.map((s) => [s.n, s]));
-      this.write(numbers.map((n) => ` [${n}](${linkSafe(byNumber.get(n)!.url)})`).join(""));
-    }
-  }
-
-  private queryFrom(inputJson: string | undefined): string | null {
+  private queryFrom(args: string): string | null {
     try {
-      const input = JSON.parse(inputJson || "{}") as { query?: unknown };
-      return typeof input.query === "string" && input.query.trim() ? input.query.trim() : null;
+      const parsed = JSON.parse(args || "{}") as { query?: unknown };
+      if (typeof parsed.query === "string" && parsed.query.trim()) return parsed.query.trim();
     } catch {
-      return null;
+      // Not JSON: fall through and use the raw text.
     }
-  }
-
-  /** Each page gets one number for the whole answer, in order of first use. */
-  private sourceNumber(url: string, title: string): number {
-    const known = this.sources.find((s) => s.url === url);
-    if (known) return known.n;
-    const source: Source = { n: this.sources.length + 1, url, title };
-    this.sources.push(source);
-    this.emit({ type: "source", source });
-    return source.n;
+    return args?.trim() ? args.trim().slice(0, 200) : null;
   }
 
   /** Adds text to the answer and sends it on. */
@@ -146,5 +90,21 @@ export class StreamTranslator {
     if (!text) return;
     this.answer += text;
     this.emit({ type: "text", text });
+  }
+
+  /**
+   * Called when the stream ends. The model writes its citations into the answer
+   * as Markdown links, so the list of sources is read back out of the text:
+   * each distinct page once, in the order it was first cited.
+   */
+  finish(): void {
+    for (const match of this.answer.matchAll(LINK)) {
+      const [, label, url] = match as unknown as [string, string, string];
+      if (this.sources.some((s) => s.url === url)) continue;
+      const title = this.titles.get(url) ?? (/^\d+$/.test(label) ? hostname(url) : label);
+      const source: Source = { n: this.sources.length + 1, url, title };
+      this.sources.push(source);
+      this.emit({ type: "source", source });
+    }
   }
 }

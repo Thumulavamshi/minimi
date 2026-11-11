@@ -196,7 +196,7 @@ async function refreshSidebar() {
   );
   el.modelNote.textContent = `Model: ${data.model}`;
   el.notice.hidden = data.hasApiKey;
-  el.notice.textContent = "No ANTHROPIC_API_KEY is set. Copy .env.example to .env, add your key, and restart the server.";
+  el.notice.textContent = "No GROQ_API_KEY is set. Copy .env.example to .env, add your key, and restart the server.";
   return data;
 }
 
@@ -286,7 +286,6 @@ async function send(text) {
           view.setLive(`Reading ${event.detail}`);
           view.addStep(`Read results from ${event.detail}`);
         }
-        if (event.kind === "search_failed") view.addStep(`A search failed (${event.detail})`);
         break;
       case "text":
         answer += event.text;

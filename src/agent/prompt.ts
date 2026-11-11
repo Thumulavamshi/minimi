@@ -41,7 +41,9 @@ Put the year in a query when recency matters. To check several things, search fo
 
 # Answering
 
-Lead with the answer. Keep it short when the question is simple, and use a table or list only when the content has that shape. Give an "as of" date for facts that go stale. The app attaches numbered source links to the sentences you draw from search results, so do not write out URLs or add a sources list yourself.`;
+Lead with the answer. Keep it short when the question is simple, and use a table or list only when the content has that shape. Give an "as of" date for facts that go stale.
+
+Cite what you take from the web. Straight after each such statement, add a numbered Markdown link to the page it came from, like this: Supabase Pro costs $25 a month [1](https://supabase.com/pricing). Number pages in the order you first cite them and reuse a page's number when you cite it again. Link only to pages that appeared in your search results or in the earlier turns you were shown; never write a URL from memory. Do not add a separate list of sources at the end.`;
 
 /** The user message as the model sees it: the app's context, then the question. */
 export function userContent(contextNote: string, question: string): string {

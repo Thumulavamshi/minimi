@@ -16,7 +16,7 @@ npm install
 cp .env.example .env
 ```
 
-Put your Anthropic API key in `.env` (it is the only key needed), then:
+Put your Groq API key in `.env` as `GROQ_API_KEY` (it is the only key needed; create one at https://console.groq.com/keys), then:
 
 ```bash
 npm run dev
@@ -63,6 +63,6 @@ The tests need no API key. They cover date resolution, recall (including the thr
 | `src/memory/digest.ts` | Background summary of each finished turn |
 | `src/agent/prompt.ts` | The system prompt and how stored turns are replayed |
 | `src/agent/turn.ts` | One turn: recall, assemble, answer, remember |
-| `src/agent/stream.ts` | Model stream to UI events, with numbered citations |
+| `src/agent/stream.ts` | Model stream to UI events; reads the source list out of the answer |
 | `src/server.ts` | HTTP API, streaming chat endpoint, static files |
 | `public/` | The chat page (no build step) |

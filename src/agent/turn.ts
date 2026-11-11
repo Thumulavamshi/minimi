@@ -7,7 +7,7 @@
  *   4. remember store the turn with its sources, then summarise it in the background
  */
 import { randomUUID } from "node:crypto";
-import Anthropic from "@anthropic-ai/sdk";
+import Groq from "groq-sdk";
 import type { Config } from "../config.ts";
 import { writeDigest } from "../memory/digest.ts";
 import { recall, renderContext } from "../memory/recall.ts";
@@ -17,8 +17,7 @@ import { formatDateTime, nowMs } from "../time/zoned.ts";
 import { assistantContent, historyWindow, SYSTEM_PROMPT, userContent } from "./prompt.ts";
 import { StreamTranslator, type AgentEvent } from "./stream.ts";
 
-type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
-type Message = Anthropic.Beta.Messages.BetaMessage;
+type MessageParam = Groq.Chat.Completions.ChatCompletionMessageParam;
 
 /** What the server sends to the browser while a turn runs. */
 export type TurnEvent =
@@ -46,11 +45,8 @@ export interface TurnDeps {
   store: MemoryStore;
   config: Config;
   /** Supplied by tests; otherwise created from the environment. */
-  client?: Anthropic;
+  client?: Groq;
 }
-
-/** A long search can pause and need resuming. This bounds how often. */
-const MAX_RESUMES = 4;
 
 function titleFrom(message: string): string {
   const flat = message.replace(/\s+/g, " ").trim();
@@ -58,26 +54,26 @@ function titleFrom(message: string): string {
 }
 
 function explain(error: unknown): string {
-  if (error instanceof Anthropic.AuthenticationError) {
-    return "The Anthropic API key is missing or was rejected. Set ANTHROPIC_API_KEY in .env and restart.";
+  if (error instanceof Groq.AuthenticationError) {
+    return "The Groq API key is missing or was rejected. Set GROQ_API_KEY in .env and restart.";
   }
-  if (error instanceof Anthropic.PermissionDeniedError) {
+  if (error instanceof Groq.PermissionDeniedError) {
     return `This API key is not allowed to do that: ${error.message}`;
   }
-  if (error instanceof Anthropic.RateLimitError) {
-    return "The model's rate limit was reached. Wait a moment and send the message again.";
+  if (error instanceof Groq.RateLimitError) {
+    return "Groq's rate limit was reached. Wait a moment and send the message again.";
   }
-  if (error instanceof Anthropic.BadRequestError) {
+  if (error instanceof Groq.BadRequestError) {
     return `The model rejected the request: ${error.message}`;
   }
-  if (error instanceof Anthropic.APIConnectionError) {
+  if (error instanceof Groq.APIConnectionError) {
     return "Could not reach the model. Check the network connection and try again.";
   }
-  if (error instanceof Anthropic.APIError) {
+  if (error instanceof Groq.APIError) {
     return `The model service returned an error (${error.status ?? "unknown"}). Try again shortly.`;
   }
-  if (error instanceof Error && /authentication|api[_ ]?key|apiKey/i.test(error.message)) {
-    return "No Anthropic API key was found. Copy .env.example to .env, set ANTHROPIC_API_KEY, and restart.";
+  if (error instanceof Error && /GROQ_API_KEY|api[_ ]?key|apiKey/i.test(error.message)) {
+    return "No Groq API key was found. Copy .env.example to .env, set GROQ_API_KEY, and restart.";
   }
   return error instanceof Error ? error.message : String(error);
 }
@@ -117,79 +113,61 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
     })),
   });
 
-  // 2. Assemble. Order matters for caching: the parts that never change come
-  //    first, and the only new text in each request is the final user message.
+  // 2. Assemble. The parts that never change come first, and the only new text
+  //    in each request is the final user message. Groq caches a repeated
+  //    prompt prefix automatically on models that support it, so a stable
+  //    prefix makes follow-up turns cheaper and faster.
   const timeline = renderTimeline(store, conversation, timezone);
-  const system: Anthropic.Beta.Messages.BetaTextBlockParam[] = [{ type: "text", text: SYSTEM_PROMPT }];
-  if (timeline) system.push({ type: "text", text: timeline });
-  system.at(-1)!.cache_control = { type: "ephemeral" };
-
-  const messages: MessageParam[] = history.flatMap((turn): MessageParam[] => [
-    { role: "user", content: userContent(turn.contextNote, turn.question) },
-    { role: "assistant", content: assistantContent(turn) },
-  ]);
-  messages.push({ role: "user", content: userContent(contextNote, request.message) });
+  const messages: MessageParam[] = [
+    { role: "system", content: timeline ? `${SYSTEM_PROMPT}\n\n${timeline}` : SYSTEM_PROMPT },
+    ...history.flatMap((turn): MessageParam[] => [
+      { role: "user", content: userContent(turn.contextNote, turn.question) },
+      { role: "assistant", content: assistantContent(turn) },
+    ]),
+    { role: "user", content: userContent(contextNote, request.message) },
+  ];
 
   // 3. Answer.
   let firstTokenMs: number | undefined;
-  const onEvent = (event: AgentEvent): void => {
+  const stream = new StreamTranslator((event) => {
     if (event.type === "text") firstTokenMs ??= Math.round(performance.now() - clockStart);
     emit(event);
-  };
-  const stream = new StreamTranslator(onEvent);
+  });
 
   let status: TurnStatus = "complete";
-  let final: Message | null = null;
   let failure: string | null = null;
+  let servedBy = config.model;
+  let usage: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens: number } | null } | undefined;
 
   try {
-    const client = deps.client ?? new Anthropic();
-    for (let resume = 0; resume <= MAX_RESUMES; resume++) {
-      const run = client.beta.messages.stream(
-        {
-          model: config.model,
-          max_tokens: 64_000,
-          system,
-          messages,
-          thinking: { type: "adaptive" },
-          output_config: { effort: config.effort },
-          tools: [
-            {
-              type: "web_search_20260209",
-              name: "web_search",
-              max_uses: config.maxSearches,
-              // Lets search favour results for where the user is.
-              user_location: { type: "approximate", timezone },
-            },
-          ],
-          // Caches the conversation so far; the next turn re-reads it cheaply.
-          cache_control: { type: "ephemeral" },
-          ...(config.refusalFallback ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const } : {}),
-        },
-        { signal: request.signal },
-      );
-      for await (const event of run) stream.handle(event);
-      final = await run.finalMessage();
-
-      // The search loop runs on the API's side and can stop part-way through a
-      // long turn. Sending its partial reply back makes it carry on.
-      if (final.stop_reason !== "pause_turn") break;
-      messages.push({ role: "assistant", content: final.content });
-    }
-
-    if (final?.stop_reason === "refusal" && !stream.answer.trim()) {
-      stream.write("I can't help with that request.");
-    } else if (final?.stop_reason === "max_tokens") {
-      status = "interrupted";
+    const client = deps.client ?? new Groq();
+    const run = await client.chat.completions.create(
+      {
+        model: config.model,
+        messages,
+        stream: true,
+        max_completion_tokens: 8192,
+        // Groq's compound system can also run code and browse pages. The brief
+        // gives the agent one tool, so everything except web search is off.
+        compound_custom: { tools: { enabled_tools: ["web_search"] } },
+      },
+      { signal: request.signal },
+    );
+    for await (const chunk of run) {
+      stream.handle(chunk);
+      servedBy = chunk.model || servedBy;
+      usage = chunk.x_groq?.usage ?? usage;
+      if (chunk.choices[0]?.finish_reason === "length") status = "interrupted";
     }
   } catch (error) {
-    if (request.signal.aborted || error instanceof Anthropic.APIUserAbortError) {
+    if (request.signal.aborted || error instanceof Groq.APIUserAbortError) {
       status = "interrupted";
     } else {
       status = "error";
       failure = explain(error);
     }
   }
+  stream.finish();
 
   // 4. Remember. A turn with no answer text is not worth remembering.
   if (!stream.answer.trim()) {
@@ -210,12 +188,12 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
     status: status === "error" ? "interrupted" : status,
     digest: null,
     stats: {
-      model: final?.model ?? config.model,
+      model: servedBy,
       totalMs: Math.round(performance.now() - clockStart),
       firstTokenMs,
-      inputTokens: final?.usage.input_tokens,
-      outputTokens: final?.usage.output_tokens,
-      cachedTokens: final?.usage.cache_read_input_tokens ?? undefined,
+      inputTokens: usage?.prompt_tokens,
+      outputTokens: usage?.completion_tokens,
+      cachedTokens: usage?.prompt_tokens_details?.cached_tokens,
     },
   };
   store.saveTurn(turn);
@@ -225,7 +203,8 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
   // Summarise in the background. The user is not waiting on this.
   if (turn.status === "complete") {
     const isFirstTurn = earlier.length === 0;
-    void writeDigest(deps.client ?? new Anthropic(), config.digestModel, turn, timezone)
+    void Promise.resolve()
+      .then(() => writeDigest(deps.client ?? new Groq(), config.digestModel, turn, timezone))
       .then((digest) => {
         if (!digest) return;
         store.setDigest(turn.id, digest);

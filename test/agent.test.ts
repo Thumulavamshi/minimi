@@ -1,58 +1,33 @@
 import assert from "node:assert/strict";
 import { setImmediate as tick } from "node:timers/promises";
 import { test } from "node:test";
-import type Anthropic from "@anthropic-ai/sdk";
+import type Groq from "groq-sdk";
 import { historyWindow } from "../src/agent/prompt.ts";
 import { StreamTranslator, type AgentEvent } from "../src/agent/stream.ts";
 import { runTurn, type TurnEvent } from "../src/agent/turn.ts";
 import type { Config } from "../src/config.ts";
 import { MemoryStore, type Digest, type Turn } from "../src/memory/store.ts";
 
-const CONFIG: Config = {
-  port: 0,
-  model: "test-model",
-  effort: "medium",
-  digestModel: "test-digest-model",
-  maxSearches: 8,
-  refusalFallback: true,
-  dbPath: ":memory:",
-  hasApiKey: true,
-};
+const CONFIG: Config = { port: 0, model: "test-model", digestModel: "test-digest-model", dbPath: ":memory:", hasApiKey: true };
 
 const NEON = "https://neon.com/pricing";
+const ANSWER = `Neon Launch is $19/month [1](${NEON}).`;
 
-/** The events of one reply that searches once and cites one page. */
+/** The chunks of one reply that thinks, searches once, and cites one page. */
 function searchReply(): unknown[] {
-  const start = (index: number, content_block: object) => ({ type: "content_block_start", index, content_block });
-  const delta = (index: number, d: object) => ({ type: "content_block_delta", index, delta: d });
-  const stop = (index: number) => ({ type: "content_block_stop", index });
+  const chunk = (delta: object, extra: object = {}) => ({ model: "test-model", choices: [{ index: 0, delta, finish_reason: null }], ...extra });
+  const search = { index: 0, type: "search", arguments: '{"query":"neon pricing 2026"}' };
   return [
-    { type: "message_start" },
-    start(0, { type: "thinking", thinking: "" }),
-    stop(0),
-    start(1, { type: "server_tool_use", id: "t1", name: "web_search", input: {} }),
-    delta(1, { type: "input_json_delta", partial_json: '{"query":"neon ' }),
-    delta(1, { type: "input_json_delta", partial_json: 'pricing 2026"}' }),
-    stop(1),
-    start(2, {
-      type: "web_search_tool_result",
-      tool_use_id: "t1",
-      content: [{ type: "web_search_result", url: NEON, title: "Neon Pricing", encrypted_content: "x", page_age: null }],
-    }),
-    stop(2),
-    start(3, { type: "text", text: "" }),
-    delta(3, { type: "text_delta", text: "Neon Launch is " }),
-    stop(3),
-    start(4, { type: "text", text: "" }),
-    delta(4, {
-      type: "citations_delta",
-      citation: { type: "web_search_result_location", url: NEON, title: "Neon Pricing", cited_text: "…", encrypted_index: "i" },
-    }),
-    delta(4, { type: "text_delta", text: "$19/month" }),
-    stop(4),
-    start(5, { type: "text", text: "" }),
-    delta(5, { type: "text_delta", text: "." }),
-    stop(5),
+    chunk({ role: "assistant", reasoning: "The user wants a price." }),
+    chunk({ executed_tools: [search] }),
+    chunk({ executed_tools: [{ ...search, search_results: { results: [{ title: "Neon Pricing", url: NEON, content: "…", score: 0.9 }] } }] }),
+    chunk({ content: "Neon Launch is " }),
+    chunk({ content: `$19/month [1](${NEON}).` }),
+    {
+      model: "test-model",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      x_groq: { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+    },
   ];
 }
 
@@ -65,157 +40,134 @@ const DIGEST: Digest = {
   recheck: "Is Neon Launch still $19/month?",
 };
 
-interface Script {
-  events: unknown[];
-  stop_reason: string;
+interface Request {
+  model: string;
+  stream?: boolean;
+  messages: Array<{ role: string; content: string }>;
+  compound_custom?: unknown;
 }
 
-/** A stand-in for the Anthropic client that replays scripted replies and records each request. */
-function fakeClient(scripts: Script[]) {
-  const requests: Array<{ system: Array<{ text: string }>; messages: Array<{ role: string; content: unknown }>; tools: unknown[] }> = [];
+/** A stand-in for the Groq client that replays scripted replies and records each chat request. */
+function fakeClient(replies: unknown[][], digest: unknown = DIGEST) {
+  const requests: Request[] = [];
   const client = {
-    beta: {
-      messages: {
-        stream(params: unknown) {
-          requests.push(structuredClone(params) as (typeof requests)[number]);
-          const script = scripts.shift()!;
+    chat: {
+      completions: {
+        async create(params: Request) {
+          if (!params.stream) return { choices: [{ message: { content: JSON.stringify(digest) } }] };
+          requests.push(structuredClone(params));
+          const chunks = replies.shift()!;
           return {
             async *[Symbol.asyncIterator]() {
-              yield* script.events;
+              yield* chunks;
             },
-            finalMessage: async () => ({
-              model: "test-model",
-              stop_reason: script.stop_reason,
-              content: [{ type: "text", text: "partial" }],
-              usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 3 },
-            }),
           };
         },
       },
     },
-    messages: { parse: async () => ({ parsed_output: DIGEST }) },
-  } as unknown as Anthropic;
+  } as unknown as Groq;
   return { client, requests };
 }
 
-async function turn(store: MemoryStore, client: Anthropic, message: string, conversationId?: string) {
+async function turn(store: MemoryStore, client: Groq, message: string, conversationId?: string) {
   const events: TurnEvent[] = [];
   await runTurn(
     { store, config: CONFIG, client },
     { message, conversationId, timezone: "Asia/Kolkata", signal: new AbortController().signal, emit: (e) => events.push(e) },
   );
   await tick(); // let the background digest finish
+  await tick();
   return events;
 }
 
-test("the stream translator yields text, activity, and numbered citations", () => {
+test("the stream translator yields text, activity, and sources read from the citations", () => {
   const events: AgentEvent[] = [];
   const translator = new StreamTranslator((e) => events.push(e));
-  for (const event of searchReply()) translator.handle(event as never);
+  for (const chunk of searchReply()) translator.handle(chunk as never);
+  translator.finish();
 
-  assert.equal(translator.answer, `Neon Launch is $19/month [1](${NEON}).`);
+  assert.equal(translator.answer, ANSWER);
   assert.deepEqual(translator.sources, [{ n: 1, url: NEON, title: "Neon Pricing" }]);
   assert.deepEqual(translator.searches, ["neon pricing 2026"]);
   assert.deepEqual(
     events.filter((e) => e.type === "activity"),
     [
       { type: "activity", kind: "thinking" },
-      { type: "activity", kind: "searching" },
       { type: "activity", kind: "searching", detail: "neon pricing 2026" },
       { type: "activity", kind: "reading", detail: "neon.com" },
     ],
   );
 });
 
-test("a page cited twice keeps one number, and a failed search is reported", () => {
-  const events: AgentEvent[] = [];
-  const translator = new StreamTranslator((e) => events.push(e));
-  const cite = { type: "web_search_result_location", url: "https://a.com/x_(y)", title: null, cited_text: "", encrypted_index: "" };
-  const feed = [
-    { type: "content_block_start", index: 0, content_block: { type: "web_search_tool_result", tool_use_id: "t", content: { type: "web_search_tool_result_error", error_code: "too_many_requests" } } },
-    { type: "content_block_start", index: 1, content_block: { type: "text", text: "" } },
-    { type: "content_block_delta", index: 1, delta: { type: "citations_delta", citation: cite } },
-    { type: "content_block_delta", index: 1, delta: { type: "citations_delta", citation: cite } },
-    { type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "A" } },
-    { type: "content_block_stop", index: 1 },
-  ];
-  for (const event of feed) translator.handle(event as never);
-  assert.equal(translator.answer, "A [1](https://a.com/x_%28y%29)");
-  assert.equal(translator.sources[0]?.title, "a.com");
-  assert.deepEqual(events[0], { type: "activity", kind: "search_failed", detail: "too_many_requests" });
+test("each cited page is listed once, in order, with the best title available", () => {
+  const translator = new StreamTranslator(() => {});
+  translator.write("A [1](https://a.com/x). B [2](https://b.com/y). A again [1](https://a.com/x). See [the docs](https://c.com/z).");
+  translator.finish();
+  assert.deepEqual(translator.sources, [
+    { n: 1, url: "https://a.com/x", title: "a.com" },
+    { n: 2, url: "https://b.com/y", title: "b.com" },
+    { n: 3, url: "https://c.com/z", title: "the docs" },
+  ]);
 });
 
 test("a turn is answered, stored with its sources, and summarised afterwards", async () => {
   const store = new MemoryStore(":memory:");
-  const { client, requests } = fakeClient([{ events: searchReply(), stop_reason: "end_turn" }]);
+  const { client, requests } = fakeClient([searchReply()]);
   const events = await turn(store, client, "What does Neon cost?");
 
   const done = events.find((e) => e.type === "done");
   assert.ok(done && done.type === "done");
   const saved = store.getTurn(done.turn.id)!;
-  assert.equal(saved.answer, `Neon Launch is $19/month [1](${NEON}).`);
+  assert.equal(saved.answer, ANSWER);
   assert.equal(saved.sources.length, 1);
   assert.deepEqual(saved.digest, DIGEST);
   assert.equal(store.getConversation(saved.conversationId)?.title, "Neon pricing");
 
   const request = requests[0]!;
-  assert.deepEqual(request.tools, [
-    { type: "web_search_20260209", name: "web_search", max_uses: 8, user_location: { type: "approximate", timezone: "Asia/Kolkata" } },
-  ]);
-  assert.equal(request.tools.length, 1, "the model has exactly one tool");
-  assert.match(String(request.messages.at(-1)?.content), /^<context>\nNow: .*\nMemory: no earlier conversations are recorded/);
+  assert.deepEqual(request.compound_custom, { tools: { enabled_tools: ["web_search"] } }, "web search is the only tool switched on");
+  assert.equal(request.messages[0]?.role, "system");
+  assert.match(request.messages.at(-1)!.content, /^<context>\nNow: .*\nMemory: no earlier conversations are recorded/);
 });
 
 test("a follow-up replays the earlier turn exactly as the model first saw it", async () => {
   const store = new MemoryStore(":memory:");
-  const { client, requests } = fakeClient([
-    { events: searchReply(), stop_reason: "end_turn" },
-    { events: searchReply(), stop_reason: "end_turn" },
-  ]);
+  const { client, requests } = fakeClient([searchReply(), searchReply()]);
   const first = await turn(store, client, "What does Neon cost?");
   const conversationId = first.find((e) => e.type === "start")!.conversationId;
   await turn(store, client, "And Supabase?", conversationId);
 
   const [one, two] = requests;
   // The earlier request's messages are a prefix of the later one: that is what keeps the cache valid.
-  assert.deepEqual(two!.messages[0], one!.messages[0]);
-  assert.deepEqual(two!.messages[1], { role: "assistant", content: `Neon Launch is $19/month [1](${NEON}).` });
-  assert.equal(two!.messages.length, 3);
-  assert.deepEqual(two!.system, one!.system, "the system prompt does not change within a conversation");
+  assert.deepEqual(two!.messages.slice(0, 2), one!.messages, "system prompt and first question are unchanged");
+  assert.deepEqual(two!.messages[2], { role: "assistant", content: ANSWER });
+  assert.equal(two!.messages.length, 4);
 });
 
 test("a new conversation sees earlier ones through the timeline", async () => {
   const store = new MemoryStore(":memory:");
-  const { client, requests } = fakeClient([
-    { events: searchReply(), stop_reason: "end_turn" },
-    { events: searchReply(), stop_reason: "end_turn" },
-  ]);
+  const { client, requests } = fakeClient([searchReply(), searchReply()]);
   await turn(store, client, "What does Neon cost?");
   await turn(store, client, "Hello again");
-  const system = requests[1]!.system.map((block) => block.text).join("\n");
+  const system = requests[1]!.messages[0]!.content;
   assert.match(system, /<earlier_conversations>/);
   assert.match(system, /stated then: Neon Launch costs \$19\/month/);
 });
 
-test("a paused search is resumed by sending the partial reply back", async () => {
+test("a summary that comes back malformed is dropped, and the turn is still stored", async () => {
   const store = new MemoryStore(":memory:");
-  const { client, requests } = fakeClient([
-    { events: searchReply().slice(0, 9), stop_reason: "pause_turn" },
-    { events: searchReply().slice(9), stop_reason: "end_turn" },
-  ]);
+  const { client } = fakeClient([searchReply()], { title: "only a title" });
   const events = await turn(store, client, "What does Neon cost?");
-  assert.equal(requests.length, 2);
-  assert.equal(requests[1]!.messages.at(-1)?.role, "assistant");
   const done = events.find((e) => e.type === "done");
   assert.ok(done && done.type === "done");
-  assert.equal(done.turn.answer, `Neon Launch is $19/month [1](${NEON}).`);
+  assert.equal(store.getTurn(done.turn.id)?.digest, null);
+  assert.equal(store.getTurn(done.turn.id)?.answer, ANSWER);
 });
 
 test("a failure before any text leaves nothing behind", async () => {
   const store = new MemoryStore(":memory:");
   const client = {
-    beta: { messages: { stream: () => { throw new Error("network down"); } } },
-  } as unknown as Anthropic;
+    chat: { completions: { create: async () => { throw new Error("network down"); } } },
+  } as unknown as Groq;
   const events = await turn(store, client, "Hello");
   assert.deepEqual(events.at(-1), { type: "error", message: "network down" });
   assert.equal(store.countTurns(), 0);
