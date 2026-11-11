@@ -61,11 +61,11 @@ function explain(error: unknown): string {
     return `This API key is not allowed to do that: ${error.message}`;
   }
   if (error instanceof Groq.RateLimitError) {
-    return "Groq's rate limit was reached. Wait a moment and send the message again.";
+    return `Groq's rate limit was reached (the free tier allows only a few thousand tokens a minute). Wait a minute and send the message again. Details: ${error.message}`;
   }
   if (error instanceof Groq.NotFoundError) {
     // Groq answers 404 when the model name is unknown or the key has no access to it.
-    return `Groq could not find what was requested: ${error.message}. Check AGENT_MODEL and DIGEST_MODEL in .env (the default answering model is "groq/compound").`;
+    return `Groq could not find what was requested: ${error.message}. Check AGENT_MODEL and DIGEST_MODEL in .env (the default answering model is "openai/gpt-oss-120b").`;
   }
   if (error instanceof Groq.BadRequestError) {
     return `The model rejected the request: ${error.message}`;
@@ -150,14 +150,20 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
         model: config.model,
         messages,
         stream: true,
-        max_completion_tokens: 8192,
-        // Groq's compound system can also run code and browse pages. The brief
-        // gives the agent one tool, so everything except web search is off.
-        compound_custom: { tools: { enabled_tools: ["web_search"] } },
+        // Kept modest: the free tier counts requested output against a small per-minute budget.
+        max_completion_tokens: 4096,
+        reasoning_effort: config.effort,
+        // The one tool. Groq runs it on its side; "auto" leaves the model free
+        // to answer from memory or general knowledge without searching.
+        tools: [{ type: "browser_search" }],
+        tool_choice: "auto",
       },
       { signal: request.signal },
     );
     for await (const chunk of run) {
+      if (config.debugStream && chunk.choices[0]?.delta.executed_tools) {
+        console.log("[stream]", JSON.stringify(chunk.choices[0].delta.executed_tools).slice(0, 1500));
+      }
       stream.handle(chunk);
       servedBy = chunk.model || servedBy;
       usage = chunk.x_groq?.usage ?? usage;

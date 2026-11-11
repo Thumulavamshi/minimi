@@ -8,7 +8,7 @@ import { runTurn, type TurnEvent } from "../src/agent/turn.ts";
 import type { Config } from "../src/config.ts";
 import { MemoryStore, type Digest, type Turn } from "../src/memory/store.ts";
 
-const CONFIG: Config = { port: 0, model: "test-model", digestModel: "test-digest-model", dbPath: ":memory:", hasApiKey: true };
+const CONFIG: Config = { port: 0, model: "test-model", effort: "low", digestModel: "test-digest-model", dbPath: ":memory:", hasApiKey: true, debugStream: false };
 
 const NEON = "https://neon.com/pricing";
 const ANSWER = `Neon Launch is $19/month [1](${NEON}).`;
@@ -44,7 +44,7 @@ interface Request {
   model: string;
   stream?: boolean;
   messages: Array<{ role: string; content: string }>;
-  compound_custom?: unknown;
+  tools?: unknown;
 }
 
 /** A stand-in for the Groq client that replays scripted replies and records each chat request. */
@@ -110,6 +110,24 @@ test("each cited page is listed once, in order, with the best title available", 
   ]);
 });
 
+test("the model's own bracket marks are removed, even when split across chunks", () => {
+  const translator = new StreamTranslator(() => {});
+  const chunk = (content: string) => ({ choices: [{ index: 0, delta: { content } }] });
+  for (const piece of ["Neon costs $19【4†L10", "-L12】 a month. 【", "5†L1】Done."]) translator.handle(chunk(piece) as never);
+  translator.finish();
+  assert.equal(translator.answer, "Neon costs $19 a month. Done.");
+});
+
+test("an answer with no links still lists the pages that were searched", () => {
+  const translator = new StreamTranslator(() => {});
+  const tool = { index: 0, type: "browser_search", arguments: 'browser.search(query="neon pricing")', search_results: { results: [{ title: "Neon Pricing", url: NEON }] } };
+  translator.handle({ choices: [{ index: 0, delta: { executed_tools: [tool] } }] } as never);
+  translator.handle({ choices: [{ index: 0, delta: { content: "Neon Launch is $19/month." } }] } as never);
+  translator.finish();
+  assert.deepEqual(translator.searches, ["neon pricing"]);
+  assert.deepEqual(translator.sources, [{ n: 1, url: NEON, title: "Neon Pricing" }]);
+});
+
 test("a turn is answered, stored with its sources, and summarised afterwards", async () => {
   const store = new MemoryStore(":memory:");
   const { client, requests } = fakeClient([searchReply()]);
@@ -124,7 +142,7 @@ test("a turn is answered, stored with its sources, and summarised afterwards", a
   assert.equal(store.getConversation(saved.conversationId)?.title, "Neon pricing");
 
   const request = requests[0]!;
-  assert.deepEqual(request.compound_custom, { tools: { enabled_tools: ["web_search"] } }, "web search is the only tool switched on");
+  assert.deepEqual(request.tools, [{ type: "browser_search" }], "the model has exactly one tool: web search");
   assert.equal(request.messages[0]?.role, "system");
   assert.match(request.messages.at(-1)!.content, /^<context>\nNow: .*\nMemory: no earlier conversations are recorded/);
 });

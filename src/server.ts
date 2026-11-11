@@ -169,7 +169,7 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 // Bound to this machine only: the app holds one person's private history.
 server.listen(config.port, "127.0.0.1", () => {
   console.log(`\n  Chat agent ready at http://localhost:${config.port}`);
-  console.log(`  Model: ${config.model} · Memory: ${config.dbPath} (${store.countTurns()} turns)`);
+  console.log(`  Model: ${config.model} (effort: ${config.effort}) · Memory: ${config.dbPath} (${store.countTurns()} turns)`);
   if (!config.hasApiKey) console.log("  No GROQ_API_KEY found. Copy .env.example to .env and add your key.");
   console.log();
 });

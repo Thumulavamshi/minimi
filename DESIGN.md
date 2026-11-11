@@ -18,7 +18,7 @@ message → recall (code, <1 ms) → assemble prompt → model + web search (str
 
 1. **Recall** (`src/memory/recall.ts`, `src/time/temporal.ts`). Code resolves every time phrase to a date range in the user's timezone, then looks up turns from those dates. If the message points at the past but the date finds nothing, a keyword index (SQLite FTS5) searches by topic.
 2. **Assemble** (`src/agent/turn.ts`). The prompt is: fixed instructions, a one-line-per-turn timeline of earlier conversations, this conversation's history, then the new message behind a `<context>` block holding the current time, the resolved dates and the recalled turns.
-3. **Answer**. One streamed call to Groq's `groq/compound`, with every built-in tool except web search switched off. The model decides whether to search and cites pages as numbered links in its answer.
+3. **Answer**. One streamed call to `openai/gpt-oss-120b` on Groq, with a single tool: Groq's built-in browser search. The model decides whether to search and cites pages as numbered links in its answer.
 4. **Remember** (`src/memory/store.ts`, `digest.ts`). The turn is stored with its timestamp, sources and the exact context it was given. A small model then writes a summary card (title, entities, facts that could change) in the background.
 
 ## Decisions
@@ -35,7 +35,7 @@ message → recall (code, <1 ms) → assemble prompt → model + web search (str
 
 **Speed.** No model call runs before the answer starts, and Groq's inference is fast. The prompt is ordered so everything before the new message is byte-identical to the previous request, which lets the provider's automatic prompt caching apply; that is why each turn's context block is stored and replayed verbatim. Search results are not replayed in later turns; the answer and its links are.
 
-**One key.** Groq's compound system runs the searches on its side, so there is one API key and one streamed request. The cost: citations are links the model writes, not passage-level citations checked by the API. The prompt restricts links to pages from the search results, and the source list is read back out of the answer.
+**One key, free to run.** Groq runs the searches on its side, so there is one API key and one streamed request, and its free tier is enough to try the agent. The cost: citations are links the model writes, not passage-level citations checked by the API. The prompt restricts links to pages from the search results, and the source list is read back out of the answer (falling back to the pages searched if the answer has no links).
 
 ## Considered and rejected
 
