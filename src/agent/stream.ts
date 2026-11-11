@@ -6,7 +6,7 @@
  * chunks.
  */
 import type Groq from "groq-sdk";
-import type { Source } from "../memory/store.ts";
+import type { Source, SourceOrigin } from "../memory/store.ts";
 
 type Chunk = Groq.Chat.Completions.ChatCompletionChunk;
 type ExecutedTool = NonNullable<Chunk["choices"][number]["delta"]["executed_tools"]>[number];
@@ -31,6 +31,16 @@ const MAX_HELD = 80;
 /** How many pages to list as sources when the answer contains no links. */
 const FALLBACK_SOURCES = 6;
 
+/** A page address reduced to what identifies the page, so trivially different spellings match. */
+export function pageKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.hostname.replace(/^www\./, "").toLowerCase()}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url;
+  }
+}
+
 function hostname(url: string): string {
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -43,8 +53,8 @@ export class StreamTranslator {
   answer = "";
   readonly sources: Source[] = [];
   readonly searches: string[] = [];
-  /** Pages the searches returned, in order: URL to title. */
-  private readonly pages = new Map<string, string>();
+  /** Pages the searches returned, in order, keyed by URL. */
+  private readonly pages = new Map<string, { title: string; excerpt?: string }>();
   /** Searches are reported in pieces; these record what has been shown already. */
   private readonly announced = new Set<number>();
   private readonly read = new Set<number>();
@@ -81,7 +91,9 @@ export class StreamTranslator {
     if (results.length > 0 && !this.read.has(tool.index)) {
       this.read.add(tool.index);
       for (const result of results) {
-        if (result.url && !this.pages.has(result.url)) this.pages.set(result.url, result.title || hostname(result.url));
+        if (!result.url || this.pages.has(result.url)) continue;
+        const excerpt = result.content?.replace(/\s+/g, " ").trim().slice(0, 280);
+        this.pages.set(result.url, { title: result.title || hostname(result.url), excerpt: excerpt || undefined });
       }
       const sites = [...new Set(results.flatMap((result) => (result.url ? [hostname(result.url)] : [])))];
       if (sites.length === 0) return;
@@ -128,22 +140,49 @@ export class StreamTranslator {
    * distinct page once, in the order it was first cited. If the answer has no
    * links, the pages the searches returned are listed instead, so the reader
    * can still see where the answer came from.
+   *
+   * Because the model writes the links itself, each one is then checked
+   * against what the app knows was actually retrieved. `memoryUrls` are the
+   * pages cited in earlier answers that were shown to the model this turn.
    */
-  finish(): void {
+  finish(memoryUrls: Iterable<string> = []): void {
     this.write(this.held.replace(BROWSER_MARK, ""));
     this.held = "";
+    const fromMemory = new Set([...memoryUrls].map(pageKey));
     for (const match of this.answer.matchAll(LINK)) {
       const [, label, url] = match as unknown as [string, string, string];
       if (this.sources.some((s) => s.url === url)) continue;
-      this.addSource(url, this.pages.get(url) ?? (/^\d+$/.test(label) ? hostname(url) : label));
+      const page = this.pageFor(url);
+      const title = page?.title ?? (/^\d+$/.test(label) ? hostname(url) : label);
+      this.addSource({ url, title, origin: this.originOf(url, fromMemory), excerpt: page?.excerpt });
     }
     if (this.sources.length === 0) {
-      for (const [url, title] of [...this.pages].slice(0, FALLBACK_SOURCES)) this.addSource(url, title);
+      for (const [url, page] of [...this.pages].slice(0, FALLBACK_SOURCES)) {
+        this.addSource({ url, title: page.title, origin: "search", excerpt: page.excerpt });
+      }
     }
   }
 
-  private addSource(url: string, title: string): void {
-    const source: Source = { n: this.sources.length + 1, url, title };
+  private pageFor(url: string): { title: string; excerpt?: string } | undefined {
+    const key = pageKey(url);
+    for (const [pageUrl, page] of this.pages) if (pageKey(pageUrl) === key) return page;
+    return undefined;
+  }
+
+  private originOf(url: string, fromMemory: ReadonlySet<string>): SourceOrigin | undefined {
+    if (this.pageFor(url)) return "search";
+    if (fromMemory.has(pageKey(url))) return "memory";
+    // Searches ran but the API reported no result pages: there is nothing to
+    // compare against, so make no claim either way.
+    if (this.pages.size === 0 && this.announced.size > 0) return undefined;
+    const site = hostname(url);
+    return [...this.pages.keys()].some((pageUrl) => hostname(pageUrl) === site) ? "site" : "unlisted";
+  }
+
+  private addSource(found: Omit<Source, "n">): void {
+    const source: Source = { n: this.sources.length + 1, ...found };
+    if (source.origin === undefined) delete source.origin;
+    if (source.excerpt === undefined) delete source.excerpt;
     this.sources.push(source);
     this.emit({ type: "source", source });
   }

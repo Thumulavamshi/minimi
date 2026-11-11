@@ -16,27 +16,11 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.ts";
-import { MemoryStore, type Digest } from "./memory/store.ts";
-import { resolveTemporal } from "./time/temporal.ts";
+import { importHistory, SEED_PREFIX, type HistoryEntry } from "./memory/history-file.ts";
+import { MemoryStore } from "./memory/store.ts";
 import { formatDateTime, isValidTimeZone, nowMs } from "./time/zoned.ts";
 
-interface SeedEntry {
-  at: string;
-  question: string;
-  answer: string;
-  sources?: Array<{ title: string; url: string }>;
-  digest?: Digest;
-}
-
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const SEED_PREFIX = "seed-";
-
-function parseAt(at: string, now: number, timezone: string): number {
-  const match = /^(.*?)\s+(\d{1,2}):(\d{2})$/.exec(at.trim());
-  const [ref] = match ? resolveTemporal(match[1]!, now, timezone) : [];
-  if (!match || !ref) throw new Error(`Cannot read the time "${at}". Use "YYYY-MM-DD HH:MM" or "last tuesday HH:MM".`);
-  return ref.candidates[0]!.startMs + Number(match[2]) * 3_600_000 + Number(match[3]) * 60_000;
-}
 
 const store = new MemoryStore(join(ROOT, config.dbPath));
 const timezone = isValidTimeZone(process.env.SEED_TZ) ? process.env.SEED_TZ : Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -50,32 +34,9 @@ if (argument === "--clear") {
   console.log(`Removed ${stale.length} seeded conversation(s).`);
 } else {
   const file = argument ?? join(ROOT, "data/demo-history.json");
-  const entries = JSON.parse(readFileSync(file, "utf8")) as SeedEntry[];
-  const now = nowMs();
-  entries.forEach((entry, i) => {
-    const createdAt = parseAt(entry.at, now, timezone);
-    const conversationId = `${SEED_PREFIX}${i + 1}`;
-    store.createConversation({
-      id: conversationId,
-      title: entry.digest?.title ?? entry.question.slice(0, 60),
-      createdAt,
-      updatedAt: createdAt,
-    });
-    store.saveTurn({
-      id: `${SEED_PREFIX}turn-${i + 1}`,
-      conversationId,
-      createdAt,
-      question: entry.question,
-      contextNote: `Now: ${formatDateTime(createdAt, timezone)} (${timezone}).`,
-      answer: entry.answer,
-      sources: (entry.sources ?? []).map((source, n) => ({ n: n + 1, ...source })),
-      searches: [],
-      status: "complete",
-      digest: entry.digest ?? null,
-      stats: { seeded: true },
-    });
-    console.log(`  ${formatDateTime(createdAt, timezone)}  ${entry.question.slice(0, 70)}`);
-  });
-  console.log(`Seeded ${entries.length} past conversation(s) into ${config.dbPath} (times in ${timezone}).`);
+  const entries = JSON.parse(readFileSync(file, "utf8")) as HistoryEntry[];
+  const turns = importHistory(store, entries, nowMs(), timezone);
+  for (const turn of turns) console.log(`  ${formatDateTime(turn.createdAt, timezone)}  ${turn.question.slice(0, 70)}`);
+  console.log(`Seeded ${turns.length} past conversation(s) into ${config.dbPath} (times in ${timezone}).`);
 }
 store.close();

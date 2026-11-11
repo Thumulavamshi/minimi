@@ -3,12 +3,35 @@
     "at": "2026-11-03 10:05",
     "question": "What is the current LTS version of Node.js? I'm setting up a new service.",
     "answer": "The current **Active LTS** line is **Node.js 24** (\"Krypton\"), which is the safe default for a new service [1](https://nodejs.org/en/about/previous-releases). Node.js 22 is in maintenance, and Node.js 26 is the newest release line but had only just been promoted to LTS, so some dependencies may lag behind it [1](https://nodejs.org/en/about/previous-releases).\n\nAs of 3 November 2026, I'd start on Node 24.",
-    "sources": [{ "title": "Node.js Releases", "url": "https://nodejs.org/en/about/previous-releases" }],
+    "sources": [
+      {
+        "title": "Node.js Releases",
+        "url": "https://nodejs.org/en/about/previous-releases"
+      }
+    ],
     "digest": {
       "title": "Node.js LTS version",
       "summary": "The user asked which Node.js version is the current LTS for a new service; the answer recommended Node.js 24.",
-      "entities": ["Node.js", "Node.js 24", "Node.js 22", "Node.js 26"],
-      "claims": ["Node.js 24 is the Active LTS line", "Node.js 22 is in maintenance", "Node.js 26 was only just promoted to LTS"],
+      "entities": [
+        "Node.js",
+        "Node.js 24",
+        "Node.js 22",
+        "Node.js 26"
+      ],
+      "claims": [
+        {
+          "text": "Node.js 24 is the Active LTS line",
+          "source": "https://nodejs.org/en/about/previous-releases"
+        },
+        {
+          "text": "Node.js 22 is in maintenance",
+          "source": "https://nodejs.org/en/about/previous-releases"
+        },
+        {
+          "text": "Node.js 26 was only just promoted to LTS",
+          "source": "https://nodejs.org/en/about/previous-releases"
+        }
+      ],
       "volatile": true,
       "recheck": "Is Node.js 24 still the recommended LTS version?"
     }
@@ -18,16 +41,51 @@
     "question": "I need managed Postgres hosting for a small SaaS, a few GB of data and low traffic. What are the options and what do they cost?",
     "answer": "For a small SaaS, four options cover most needs:\n\n| Host | Entry paid plan | Notes |\n|---|---|---|\n| Neon | Launch, usage-based, about $19/month typical | Serverless, scales to zero, branching [1](https://neon.com/pricing) |\n| Supabase | Pro, $25/month per project | Postgres plus auth and storage; 8 GB database included [2](https://supabase.com/pricing) |\n| Render | Basic, from $6/month | Simple fixed-size instances [3](https://render.com/pricing) |\n| AWS RDS | db.t4g.micro, about $13/month plus storage | Most control, most setup [4](https://aws.amazon.com/rds/postgresql/pricing/) |\n\nFor low traffic and a few GB, **Neon** is the cheapest to idle and **Supabase** is the best value if you also want auth and storage. Prices are as recorded on the day of this conversation.",
     "sources": [
-      { "title": "Neon Pricing", "url": "https://neon.com/pricing" },
-      { "title": "Supabase Pricing", "url": "https://supabase.com/pricing" },
-      { "title": "Render Pricing", "url": "https://render.com/pricing" },
-      { "title": "Amazon RDS for PostgreSQL Pricing", "url": "https://aws.amazon.com/rds/postgresql/pricing/" }
+      {
+        "title": "Neon Pricing",
+        "url": "https://neon.com/pricing"
+      },
+      {
+        "title": "Supabase Pricing",
+        "url": "https://supabase.com/pricing"
+      },
+      {
+        "title": "Render Pricing",
+        "url": "https://render.com/pricing"
+      },
+      {
+        "title": "Amazon RDS for PostgreSQL Pricing",
+        "url": "https://aws.amazon.com/rds/postgresql/pricing/"
+      }
     ],
     "digest": {
       "title": "Postgres hosting options",
       "summary": "The user asked for managed Postgres hosting for a small SaaS; the answer compared Neon, Supabase, Render and AWS RDS and favoured Neon or Supabase.",
-      "entities": ["Neon", "Supabase", "Render", "AWS RDS", "Postgres"],
-      "claims": ["Neon Launch is usage-based, about $19/month typical", "Supabase Pro costs $25/month per project with 8 GB included", "Render Postgres Basic starts at $6/month", "AWS RDS db.t4g.micro is about $13/month plus storage"],
+      "entities": [
+        "Neon",
+        "Supabase",
+        "Render",
+        "AWS RDS",
+        "Postgres"
+      ],
+      "claims": [
+        {
+          "text": "Neon Launch is usage-based, about $19/month typical",
+          "source": "https://neon.com/pricing"
+        },
+        {
+          "text": "Supabase Pro costs $25/month per project with 8 GB included",
+          "source": "https://supabase.com/pricing"
+        },
+        {
+          "text": "Render Postgres Basic starts at $6/month",
+          "source": "https://render.com/pricing"
+        },
+        {
+          "text": "AWS RDS db.t4g.micro is about $13/month plus storage",
+          "source": "https://aws.amazon.com/rds/postgresql/pricing/"
+        }
+      ],
       "volatile": true,
       "recheck": "Has pricing changed for Neon, Supabase, Render or AWS RDS Postgres?"
     }
@@ -37,17 +95,59 @@
     "question": "Help me shortlist 5 CRM tools for a 20-person sales team. We want pipeline management, email sync and decent reporting.",
     "answer": "Here is a shortlist of five that fit a 20-person sales team:\n\n| CRM | Plan that fits | Price per user per month (annual) |\n|---|---|---|\n| HubSpot Sales Hub | Professional | $90 [1](https://www.hubspot.com/pricing/sales) |\n| Pipedrive | Growth | $39 [2](https://www.pipedrive.com/en/pricing) |\n| Salesforce | Pro Suite | $100 [3](https://www.salesforce.com/sales/pricing/) |\n| Zoho CRM | Professional | $23 [4](https://www.zoho.com/crm/zohocrm-pricing.html) |\n| Close | Growth | $99 [5](https://www.close.com/pricing) |\n\n**Pipedrive** and **Zoho CRM** are the budget picks, **Close** is strongest if the team lives in calls and email, and **HubSpot** or **Salesforce** make sense if marketing will share the system. Prices are as recorded on the day of this conversation.",
     "sources": [
-      { "title": "HubSpot Sales Hub Pricing", "url": "https://www.hubspot.com/pricing/sales" },
-      { "title": "Pipedrive Pricing", "url": "https://www.pipedrive.com/en/pricing" },
-      { "title": "Salesforce Sales Pricing", "url": "https://www.salesforce.com/sales/pricing/" },
-      { "title": "Zoho CRM Pricing", "url": "https://www.zoho.com/crm/zohocrm-pricing.html" },
-      { "title": "Close Pricing", "url": "https://www.close.com/pricing" }
+      {
+        "title": "HubSpot Sales Hub Pricing",
+        "url": "https://www.hubspot.com/pricing/sales"
+      },
+      {
+        "title": "Pipedrive Pricing",
+        "url": "https://www.pipedrive.com/en/pricing"
+      },
+      {
+        "title": "Salesforce Sales Pricing",
+        "url": "https://www.salesforce.com/sales/pricing/"
+      },
+      {
+        "title": "Zoho CRM Pricing",
+        "url": "https://www.zoho.com/crm/zohocrm-pricing.html"
+      },
+      {
+        "title": "Close Pricing",
+        "url": "https://www.close.com/pricing"
+      }
     ],
     "digest": {
       "title": "CRM shortlist for sales team",
       "summary": "The user asked for five CRM tools for a 20-person sales team; the shortlist was HubSpot Sales Hub, Pipedrive, Salesforce, Zoho CRM and Close, with a plan and price for each.",
-      "entities": ["HubSpot Sales Hub", "Pipedrive", "Salesforce", "Zoho CRM", "Close"],
-      "claims": ["HubSpot Sales Hub Professional is $90 per user per month", "Pipedrive Growth is $39 per user per month", "Salesforce Pro Suite is $100 per user per month", "Zoho CRM Professional is $23 per user per month", "Close Growth is $99 per user per month"],
+      "entities": [
+        "HubSpot Sales Hub",
+        "Pipedrive",
+        "Salesforce",
+        "Zoho CRM",
+        "Close"
+      ],
+      "claims": [
+        {
+          "text": "HubSpot Sales Hub Professional is $90 per user per month",
+          "source": "https://www.hubspot.com/pricing/sales"
+        },
+        {
+          "text": "Pipedrive Growth is $39 per user per month",
+          "source": "https://www.pipedrive.com/en/pricing"
+        },
+        {
+          "text": "Salesforce Pro Suite is $100 per user per month",
+          "source": "https://www.salesforce.com/sales/pricing/"
+        },
+        {
+          "text": "Zoho CRM Professional is $23 per user per month",
+          "source": "https://www.zoho.com/crm/zohocrm-pricing.html"
+        },
+        {
+          "text": "Close Growth is $99 per user per month",
+          "source": "https://www.close.com/pricing"
+        }
+      ],
       "volatile": true,
       "recheck": "Have any of the five shortlisted CRM tools changed pricing or shipped something big?"
     }

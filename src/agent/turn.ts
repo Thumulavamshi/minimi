@@ -28,7 +28,7 @@ export type TurnEvent =
       /** The dates the app read out of the message. */
       dates: Array<{ phrase: string; label: string }>;
       /** The past turns handed to the model. */
-      recalled: Array<{ when: string; question: string; reason: string }>;
+      recalled: Array<{ when: string; question: string; reason: string; claims: string[] }>;
     }
   | { type: "done"; turn: Turn }
   | { type: "error"; message: string };
@@ -114,6 +114,7 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
       when: formatDateTime(hit.turn.createdAt, timezone),
       question: hit.turn.question,
       reason: hit.reason,
+      claims: hit.turn.digest?.claims.map((c) => c.text) ?? [],
     })),
   });
 
@@ -178,7 +179,10 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
       console.error(`[turn] ${config.model} failed:`, error);
     }
   }
-  stream.finish();
+  // Links the model could legitimately have taken from memory: pages cited in
+  // the earlier answers it was shown, either recalled or in this conversation.
+  const shown = [...history, ...recalled.hits.map((hit) => hit.turn)];
+  stream.finish(shown.flatMap((t) => t.sources.map((s) => s.url)));
 
   // 4. Remember. A turn with no answer text is not worth remembering.
   if (!stream.answer.trim()) {

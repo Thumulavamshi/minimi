@@ -193,6 +193,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   text-overflow: ellipsis;
 }
 .sources a:hover { border-color: var(--accent); color: var(--text); }
+/* A link the model supplied that was not among the search results. */
+.sources a.origin-unlisted { border-style: dashed; border-color: var(--accent); }
 .foot { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .problem { margin-top: 8px; padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 14px; }
 

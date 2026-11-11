@@ -35,7 +35,7 @@ const DIGEST: Digest = {
   title: "Neon pricing",
   summary: "Asked for Neon's price; it was $19/month.",
   entities: ["Neon"],
-  claims: ["Neon Launch costs $19/month"],
+  claims: [{ text: "Neon Launch costs $19/month", source: NEON }],
   volatile: true,
   recheck: "Is Neon Launch still $19/month?",
 };
@@ -87,7 +87,7 @@ test("the stream translator yields text, activity, and sources read from the cit
   translator.finish();
 
   assert.equal(translator.answer, ANSWER);
-  assert.deepEqual(translator.sources, [{ n: 1, url: NEON, title: "Neon Pricing" }]);
+  assert.deepEqual(translator.sources, [{ n: 1, url: NEON, title: "Neon Pricing", origin: "search", excerpt: "…" }]);
   assert.deepEqual(translator.searches, ["neon pricing 2026"]);
   assert.deepEqual(
     events.filter((e) => e.type === "activity"),
@@ -103,11 +103,34 @@ test("each cited page is listed once, in order, with the best title available", 
   const translator = new StreamTranslator(() => {});
   translator.write("A [1](https://a.com/x). B [2](https://b.com/y). A again [1](https://a.com/x). See [the docs](https://c.com/z).");
   translator.finish();
-  assert.deepEqual(translator.sources, [
-    { n: 1, url: "https://a.com/x", title: "a.com" },
-    { n: 2, url: "https://b.com/y", title: "b.com" },
-    { n: 3, url: "https://c.com/z", title: "the docs" },
-  ]);
+  assert.deepEqual(
+    translator.sources.map((s) => [s.n, s.url, s.title]),
+    [
+      [1, "https://a.com/x", "a.com"],
+      [2, "https://b.com/y", "b.com"],
+      [3, "https://c.com/z", "the docs"],
+    ],
+  );
+});
+
+test("each cited link is checked against what was actually retrieved", () => {
+  const translator = new StreamTranslator(() => {});
+  const results = [{ title: "Neon Pricing", url: "https://www.neon.com/pricing/", content: "Launch plan" }];
+  translator.handle({ choices: [{ index: 0, delta: { executed_tools: [{ index: 0, type: "search", arguments: "{}", search_results: { results } }] } }] } as never);
+  translator.write(
+    "Searched [1](https://neon.com/pricing). Remembered [2](https://supabase.com/pricing). Same site [3](https://neon.com/docs). Invented [4](https://example.org/made-up).",
+  );
+  translator.finish(["https://supabase.com/pricing"]);
+  assert.deepEqual(translator.sources.map((s) => s.origin), ["search", "memory", "site", "unlisted"]);
+  assert.equal(translator.sources[0]?.excerpt, "Launch plan");
+});
+
+test("when searches ran but the API reported no pages, links are left unjudged", () => {
+  const translator = new StreamTranslator(() => {});
+  translator.handle({ choices: [{ index: 0, delta: { executed_tools: [{ index: 0, type: "search", arguments: '{"query":"x"}' }] } }] } as never);
+  translator.write("See [1](https://a.com/x).");
+  translator.finish();
+  assert.equal(translator.sources[0]?.origin, undefined);
 });
 
 test("the model's own bracket marks are removed, even when split across chunks", () => {
@@ -125,7 +148,7 @@ test("an answer with no links still lists the pages that were searched", () => {
   translator.handle({ choices: [{ index: 0, delta: { content: "Neon Launch is $19/month." } }] } as never);
   translator.finish();
   assert.deepEqual(translator.searches, ["neon pricing"]);
-  assert.deepEqual(translator.sources, [{ n: 1, url: NEON, title: "Neon Pricing" }]);
+  assert.deepEqual(translator.sources, [{ n: 1, url: NEON, title: "Neon Pricing", origin: "search" }]);
 });
 
 test("a turn is answered, stored with its sources, and summarised afterwards", async () => {

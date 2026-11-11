@@ -18,7 +18,8 @@ const DigestSchema = z.object({
   title: z.string(),
   summary: z.string(),
   entities: z.array(z.string()),
-  claims: z.array(z.string()),
+  // Small models sometimes return a bare string for a claim; accept that too.
+  claims: z.array(z.union([z.string(), z.object({ text: z.string(), source: z.string().nullable().optional() })])),
   volatile: z.boolean(),
   recheck: z.string().nullable(),
 });
@@ -29,7 +30,7 @@ Reply with one JSON object and nothing else, with these keys:
 - "title": a title for the exchange, at most 6 words, with no date.
 - "summary": one or two sentences: what the user wanted and what the answer concluded.
 - "entities": an array of the products, companies, people and places named (at most 12).
-- "claims": an array of specific facts from the answer that could change with time, each standing alone, e.g. "Supabase Pro costs $25/month" (at most 8; empty if none).
+- "claims": an array of the specific facts from the answer that could change with time (at most 8; empty if none). Each is an object with "text", the fact standing alone, e.g. "Supabase Pro costs $25/month", and "source", the URL of the link the answer cites for that fact, or null if it cites none.
 - "volatile": true if the answer depends on prices, versions, availability, news or anything else that goes stale; otherwise false.
 - "recheck": if volatile, a question the user could ask later to re-verify the answer, phrased as they would ask it; otherwise null.`;
 
@@ -48,5 +49,12 @@ export async function writeDigest(client: Groq, model: string, turn: Turn, timez
     ],
   });
   const parsed = DigestSchema.safeParse(JSON.parse(response.choices[0]?.message.content ?? "null"));
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) return null;
+  // A claim may only point at a page the answer really cited.
+  const cited = new Set(turn.sources.map((s) => s.url));
+  const claims = parsed.data.claims.map((c) => {
+    const claim = typeof c === "string" ? { text: c, source: null } : c;
+    return { text: claim.text, source: claim.source && cited.has(claim.source) ? claim.source : null };
+  });
+  return { ...parsed.data, claims };
 }

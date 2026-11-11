@@ -30,7 +30,7 @@ export function timelineLine(turn: Turn, timezone: string): string {
     // The digest is written just after the answer. Until then, fall back to the raw text.
     return `- ${when} | asked: "${clip(turn.question, 160)}" | answered: ${clip(turn.answer, 220) || "(no answer recorded)"}`;
   }
-  const facts = digest.claims.length ? ` | stated then: ${digest.claims.map((c) => clip(c, 140)).join("; ")}` : "";
+  const facts = digest.claims.length ? ` | stated then: ${digest.claims.map((c) => clip(c.text, 140)).join("; ")}` : "";
   return `- ${when} | asked: "${clip(turn.question, 160)}" | answered: ${clip(digest.summary, 300)}${facts}`;
 }
 

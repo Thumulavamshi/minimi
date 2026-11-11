@@ -65,6 +65,14 @@ function scrollToBottom() {
 
 // ---------- rendering a turn ----------
 
+/** How each result of the app's link check is shown beside a source. */
+const ORIGINS = {
+  search: { mark: "✓", note: "This page was returned by this answer's web search." },
+  memory: { mark: "↺", note: "This page was cited in an earlier answer that the agent recalled." },
+  site: { mark: "~", note: "The search returned this site, but not this exact page." },
+  unlisted: { mark: "?", note: "This link was not among the search results. The model supplied it, so check it before relying on it." },
+};
+
 /** Builds the elements for one assistant reply and returns handles to update them. */
 function assistantView() {
   const root = node("div", "assistant");
@@ -95,11 +103,12 @@ function assistantView() {
     },
     addSource(source) {
       const item = node("li");
-      const link = node("a", null, `${source.n}. ${source.title}`);
+      const origin = ORIGINS[source.origin];
+      const link = node("a", origin ? `origin-${source.origin}` : null, `${origin ? `${origin.mark} ` : ""}${source.n}. ${source.title}`);
       link.href = source.url;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.title = source.url;
+      link.title = [source.url, origin?.note, source.excerpt && `Search excerpt: ${source.excerpt}`].filter(Boolean).join("\n\n");
       item.append(link);
       sources.append(item);
     },
@@ -114,12 +123,24 @@ function assistantView() {
       if (view.recalled) parts.push(`recalled ${view.recalled} earlier ${view.recalled === 1 ? "turn" : "turns"}`);
       if (turn.searches.length) parts.push(`${turn.searches.length} web ${turn.searches.length === 1 ? "search" : "searches"}`);
       summary.textContent = parts.length ? `How this was answered: ${parts.join(", ")}` : "How this was answered: from memory and general knowledge";
+      // The result of checking each cited link against what was retrieved.
+      const count = (origin) => turn.sources.filter((s) => s.origin === origin).length;
+      const checked = [
+        count("search") && `${count("search")} from this answer's search results`,
+        count("memory") && `${count("memory")} carried over from an earlier answer`,
+        count("site") && `${count("site")} on a searched site but a different page`,
+        count("unlisted") && `${count("unlisted")} not found in the search results`,
+      ].filter(Boolean);
+      if (checked.length) view.addStep(`Link check: ${checked.join(", ")}`);
+      // Facts recorded from this answer for later re-checking (written just after the answer).
+      for (const claim of turn.digest?.claims ?? []) view.addStep(`Recorded for re-checking: ${claim.text}`);
       context.textContent = `What the model was given before your message:\n\n${turn.contextNote}`;
       steps.hidden = false;
 
       const stats = [];
       if (turn.stats.totalMs) stats.push(`answered in ${seconds(turn.stats.totalMs)}`);
       if (turn.stats.firstTokenMs) stats.push(`first words after ${seconds(turn.stats.firstTokenMs)}`);
+      if (turn.stats.inputTokens) stats.push(`${turn.stats.cachedTokens ?? 0} of ${turn.stats.inputTokens} prompt tokens read from cache`);
       if (turn.status !== "complete") stats.push("stopped early");
       if (turn.stats.seeded) stats.push("demo history added by npm run seed");
       foot.textContent = stats.join(" · ");
@@ -272,7 +293,10 @@ async function send(text) {
       case "start":
         state.conversationId = event.conversationId;
         for (const date of event.dates) view.addStep(`Read "${date.phrase}" as ${date.label}`);
-        for (const past of event.recalled) view.addStep(`Recalled ${past.when}: "${past.question}" (${past.reason})`);
+        for (const past of event.recalled) {
+          view.addStep(`Recalled ${past.when}: "${past.question}" (${past.reason})`);
+          for (const claim of past.claims) view.addStep(`Claim to re-check: ${claim}`);
+        }
         view.recalled = event.recalled.length;
         if (event.recalled.length) view.setLive(`Recalled ${event.recalled.length} earlier ${event.recalled.length === 1 ? "turn" : "turns"}`);
         break;

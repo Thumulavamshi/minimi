@@ -31,6 +31,15 @@ export interface DateLookup {
   range: DateRange;
   /** True when the first reading had no turns and a later reading did. */
   usedAlternate: boolean;
+  /**
+   * True when the phrase has more than one reading with recorded turns and
+   * the topic does not tell them apart, e.g. "what did I ask last Tuesday?"
+   * when both of the last two Tuesdays have conversations. A record existing
+   * on a date does not prove it is the date the user meant.
+   */
+  ambiguous: boolean;
+  /** Other readings that have records, but on topics the message does not mention. */
+  otherDates: string[];
   hits: Turn[];
   /** Filled only when no reading had any turns. */
   nearest: { before: Turn | null; after: Turn | null } | null;
@@ -114,46 +123,70 @@ export function recall(store: MemoryStore, input: RecallInput): Recall {
   const seen = new Set<string>();
   const hits: RecallHit[] = [];
   const dateLookups: DateLookup[] = [];
+  /** Whether any turn found by date shares a topic word with the message. */
+  let dateHitOnTopic = false;
 
   for (const ref of refs) {
     const reachesNow = ref.candidates[0]!.endMs > input.nowMs;
-    let matched = false;
-    for (const [i, range] of ref.candidates.entries()) {
+    // Look at every reading of the phrase, not just the likeliest.
+    const withRecords = ref.candidates.flatMap((range, i) => {
       // Stop at the present so that "today" cannot match the question being asked.
       const found = store.turnsBetween(range.startMs, Math.min(range.endMs, input.nowMs));
-      if (found.length === 0) continue;
+      if (found.length === 0) return [];
       const kept = [...found]
         .sort((a, b) => overlap(b, words) - overlap(a, words) || a.createdAt - b.createdAt)
         .slice(0, MAX_DATE_HITS);
+      return [{ range, kept, isAlternate: i > 0, onTopic: kept.some((turn) => overlap(turn, words) > 0) }];
+    });
+    // When more than one reading has records, the topic decides if it can:
+    // "last Tuesday I asked about Postgres" means the Tuesday with the
+    // Postgres conversation. If the topic does not separate them, every
+    // reading is kept and the model is told to ask rather than choose.
+    const topical = withRecords.filter((reading) => reading.onTopic);
+    const settled = topical.length > 0 && topical.length < withRecords.length;
+    const readings = settled ? topical : withRecords;
+    const otherDates = settled ? withRecords.filter((reading) => !reading.onTopic).map((reading) => reading.range.label) : [];
+    for (const { range, kept, isAlternate } of readings) {
       for (const turn of kept) {
         if (seen.has(turn.id)) continue;
         seen.add(turn.id);
         hits.push({ turn, reason: `asked on ${range.label}` });
       }
-      dateLookups.push({ phrase: ref.phrase, range, usedAlternate: i > 0, hits: kept, nearest: null });
-      matched = true;
-      break;
+      if (kept.some((turn) => overlap(turn, words) > 0)) dateHitOnTopic = true;
+      dateLookups.push({
+        phrase: ref.phrase,
+        range,
+        usedAlternate: isAlternate && withRecords.length === 1,
+        ambiguous: readings.length > 1,
+        otherDates,
+        hits: kept,
+        nearest: null,
+      });
     }
     // "Nothing was recorded on that day" is worth saying only when the user
     // asked about a past day. "Is it still true today?" is not such a question.
-    if (!matched && pointsBack && !reachesNow) {
+    if (readings.length === 0 && pointsBack && !reachesNow) {
       const first = ref.candidates[0]!;
       dateLookups.push({
         phrase: ref.phrase,
         range: first,
         usedAlternate: false,
+        ambiguous: false,
+        otherDates: [],
         hits: [],
         nearest: store.nearest(first.startMs, first.endMs),
       });
     }
   }
 
-  // The topic search runs when the message points at the past but its date
-  // found nothing (or it gave no date). When the date did find turns, the user
-  // has already identified the conversation, and loosely related turns from
-  // other days would only dilute it.
+  // The topic search runs when the message points at the past and the date
+  // did not find the conversation: either the date found nothing, or what it
+  // found is about something else ("last Friday I asked about Postgres", when
+  // Friday's only conversation was about TypeScript). When a turn found by
+  // date does match the topic, the user has identified the conversation, and
+  // loosely related turns from other days would only dilute it.
   const topicHits: Turn[] = [];
-  if (pointsBack && hits.length === 0 && words.length > 0) {
+  if (pointsBack && words.length > 0 && !dateHitOnTopic) {
     for (const turn of store.search(words, MAX_TOPIC_HITS)) {
       if (seen.has(turn.id)) continue;
       seen.add(turn.id);
@@ -178,6 +211,11 @@ function renderTurn(turn: Turn, input: RecallInput, inFull: boolean): string {
   const lines = [`  <past_turn asked="${when}">`, `  User asked: ${clip(turn.question, 600)}`];
   if (turn.status !== "complete") lines.push("  (That answer was cut short and is incomplete.)");
   lines.push(`  You answered: ${clip(turn.answer, ANSWER_BUDGET) || "(no answer was recorded)"}`);
+  const claims = turn.digest?.claims ?? [];
+  if (claims.length > 0) {
+    lines.push("  Claims recorded from that answer (each is something to re-check, not a current fact):");
+    claims.forEach((claim, i) => lines.push(`    ${i + 1}. ${claim.text}${claim.source ? ` (source then: ${claim.source})` : ""}`));
+  }
   lines.push("  </past_turn>");
   return lines.join("\n");
 }
@@ -210,11 +248,22 @@ export function renderContext(result: Recall, input: RecallInput): string {
   lines.push(
     "Memory lookup (run automatically; it shows what was said at the time, which is not evidence of what is true now):",
   );
+  const flagged = new Set<string>();
   for (const lookup of result.dateLookups) {
+    if (lookup.ambiguous && !flagged.has(lookup.phrase)) {
+      flagged.add(lookup.phrase);
+      lines.push(
+        `- "${lookup.phrase}" could mean more than one date, and more than one has recorded turns (listed next, in brief). Nothing in the message shows which the user means, so tell them what is recorded on each and ask which day they mean; do not pick one.`,
+      );
+    }
     if (lookup.hits.length > 0) {
-      const note = lookup.usedAlternate ? ` (nothing on the first reading of "${lookup.phrase}", so this is the other one)` : "";
+      const note = lookup.usedAlternate
+        ? ` (nothing on the first reading of "${lookup.phrase}", so this is the other one)`
+        : lookup.otherDates.length
+          ? ` (chosen by topic; "${lookup.phrase}" could also mean ${lookup.otherDates.join(" or ")}, which has records on other topics)`
+          : "";
       lines.push(`- ${lookup.range.label}${note}: ${lookup.hits.length} recorded turn(s).`);
-      for (const turn of lookup.hits) lines.push(renderTurn(turn, input, result.pointsBack));
+      for (const turn of lookup.hits) lines.push(renderTurn(turn, input, result.pointsBack && !lookup.ambiguous));
       continue;
     }
     const near = [describeNearest(lookup.nearest?.before ?? null, input.timezone), describeNearest(lookup.nearest?.after ?? null, input.timezone)]

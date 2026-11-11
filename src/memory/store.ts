@@ -13,11 +13,30 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+/**
+ * Where a cited link came from, checked by the app after the answer:
+ *   search    a page this answer's web searches returned
+ *   memory    a page cited in an earlier answer the model was shown
+ *   site      a different page on a site the searches returned
+ *   unlisted  none of the above: the model supplied the address itself
+ */
+export type SourceOrigin = "search" | "memory" | "site" | "unlisted";
+
 export interface Source {
   /** The citation number used in the answer text. */
   n: number;
   url: string;
   title: string;
+  /** Absent when the check could not be made (the API reported no result pages). */
+  origin?: SourceOrigin;
+  /** What the search returned for this page, kept as evidence of what was seen. */
+  excerpt?: string;
+}
+
+/** One fact from an answer that could change, with the page it was drawn from. */
+export interface Claim {
+  text: string;
+  source: string | null;
 }
 
 /** A compact summary of a turn, written by a small model after the answer. */
@@ -27,7 +46,7 @@ export interface Digest {
   /** Products, companies, people: the names a later question would use. */
   entities: string[];
   /** Specific facts stated in the answer that could change over time. */
-  claims: string[];
+  claims: Claim[];
   /** True when the answer depends on facts that go stale (prices, versions, news). */
   volatile: boolean;
   /** A question that would re-verify this answer later, or null. */
@@ -116,6 +135,12 @@ const SCHEMA = `
   );
 `;
 
+/** Digests written before claims carried a source stored them as plain strings. */
+function toDigest(json: string): Digest {
+  const digest = JSON.parse(json) as Omit<Digest, "claims"> & { claims: Array<string | Claim> };
+  return { ...digest, claims: digest.claims.map((c) => (typeof c === "string" ? { text: c, source: null } : c)) };
+}
+
 function toTurn(row: TurnRow): Turn {
   return {
     id: row.id,
@@ -127,7 +152,7 @@ function toTurn(row: TurnRow): Turn {
     sources: JSON.parse(row.sources) as Source[],
     searches: JSON.parse(row.searches) as string[],
     status: row.status as TurnStatus,
-    digest: row.digest ? (JSON.parse(row.digest) as Digest) : null,
+    digest: row.digest ? toDigest(row.digest) : null,
     stats: JSON.parse(row.stats) as TurnStats,
   };
 }
@@ -135,7 +160,7 @@ function toTurn(row: TurnRow): Turn {
 /** The text a keyword search should match for a turn. */
 function searchableText(turn: Turn): string {
   const d = turn.digest;
-  return [turn.question, d?.title, d?.summary, d?.entities.join(" "), d?.claims.join(" "), turn.answer]
+  return [turn.question, d?.title, d?.summary, d?.entities.join(" "), d?.claims.map((c) => c.text).join(" "), turn.answer]
     .filter(Boolean)
     .join("\n");
 }
