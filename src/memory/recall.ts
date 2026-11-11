@@ -87,6 +87,7 @@ const RECALL_CUE = new RegExp(
     "\\b(?:last|previous|earlier|prior|other)\\s+(?:time|chat|conversation|session|discussion|answer)\\b",
     "\\bour\\s+(?:chat|conversation|discussion|shortlist|list)\\b",
     "\\b(?:your|that|the)\\s+(?:earlier|previous|last|old)\\s+(?:answer|recommendation|reply|response|list)\\b",
+    "\\bmy\\s+(?:earlier\\s+|last\\s+|previous\\s+)?(?:question|questions|query|request)\\b",
     "\\b(?:previously|remember|recall|again|still\\s+(?:correct|true|accurate|valid|right|the\\s+case))\\b",
     "\\bsince\\s+(?:then|we|i|our)\\b",
   ].join("|"),
@@ -101,7 +102,7 @@ const STOPWORDS = new Set(
   through to today too under until up us very was we were what when where which while who whom why will with would
   yesterday you your yours tell told said say know anything something please thanks answer question talked discussed
   remember recall previously earlier time day week month monday tuesday wednesday thursday friday saturday sunday january
-  february march april may june july august september october november december`.split(/\s+/),
+  february march april may june july august september october november december one ones thing things stuff`.split(/\s+/),
 );
 
 /** The content words of a message: lowercased, deduplicated, without filler. */

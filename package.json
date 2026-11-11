@@ -12,7 +12,9 @@
     "start": "node --disable-warning=ExperimentalWarning --import tsx src/server.ts",
     "seed": "node --disable-warning=ExperimentalWarning --import tsx src/seed.ts",
     "test": "node --disable-warning=ExperimentalWarning --import tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval": "node --disable-warning=ExperimentalWarning --import tsx eval/run.ts",
+    "eval:live": "node --disable-warning=ExperimentalWarning --import tsx eval/live.ts"
   },
   "dependencies": {
     "dompurify": "^3.4.17",

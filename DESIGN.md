@@ -2,52 +2,53 @@
 
 ## What the brief is really asking
 
-The three sample questions are not search questions:
-
-- "What did I ask you on 3 November? Is your answer still correct today?"
-- "Last Tuesday I asked you about Postgres hosting. Has any pricing changed since then?"
-- "On Monday we shortlisted 5 CRM tools… Has any of them changed pricing since?"
-
-Each needs three things a plain search agent lacks: a **dated memory** that outlives the session, **exact dates** for phrases like "last Tuesday", and the habit of treating an old answer as **a claim to re-check, not a fact to repeat**. The design is built around those three, under the brief's constraint that the model has exactly one tool.
+The sample questions ("What did I ask you on 3 November? Is your answer still correct today?") are not search questions. Each needs a **dated memory** that outlives the session, **exact dates** for phrases like "last Tuesday", and the habit of treating an old answer as **a claim to re-check, not a fact to repeat**. The design is built around those three, under the constraint that the model has exactly one tool.
 
 ## How a turn works
 
 ```
-message → recall (code, <1 ms) → assemble prompt → model + web search (streamed) → store turn → digest (background)
+message → recall (code, ~1 ms) → assemble prompt → model + web search (streamed) → check links → store → summarise (background)
 ```
 
-1. **Recall** (`src/memory/recall.ts`, `src/time/temporal.ts`). Code resolves every time phrase to a date range in the user's timezone, then looks up turns from those dates. If the message points at the past but the date finds nothing, a keyword index (SQLite FTS5) searches by topic.
-2. **Assemble** (`src/agent/turn.ts`). The prompt is: fixed instructions, a one-line-per-turn timeline of earlier conversations, this conversation's history, then the new message behind a `<context>` block holding the current time, the resolved dates and the recalled turns.
-3. **Answer**. One streamed call to `openai/gpt-oss-120b` on Groq, with a single tool: Groq's built-in browser search. The model decides whether to search and cites pages as numbered links in its answer.
-4. **Remember** (`src/memory/store.ts`, `digest.ts`). The turn is stored with its timestamp, sources and the exact context it was given. A small model then writes a summary card (title, entities, facts that could change) in the background.
+1. **Recall** (`src/memory/recall.ts`, `src/time/temporal.ts`). Code resolves each time phrase to a date range in the user's timezone and fetches the turns from those dates. If the message points at the past but the date finds nothing on that topic, a keyword index (SQLite FTS5) searches by topic.
+2. **Assemble** (`src/agent/turn.ts`). Fixed instructions, a one-line-per-turn timeline of earlier conversations, this conversation's history, then the new message behind a `<context>` block: the current time, the resolved dates, the recalled turns and their recorded claims.
+3. **Answer**. One streamed call to `openai/gpt-oss-120b` on Groq with a single tool, Groq's built-in browser search.
+4. **Check and remember** (`src/agent/stream.ts`, `src/memory/`). Every link in the answer is checked against the pages the searches returned. The turn is stored with its timestamp, sources and the exact context it was given. A small model then records the answer's time-sensitive facts as claims, each with its source.
 
 ## Decisions
 
-**Memory is context, not a tool.** The brief allows one tool. More importantly, a recall tool costs a model round-trip and depends on the model choosing to call it. Looking memory up in code first is faster (0.5 ms over 2,000 turns) and cannot be forgotten.
+**Memory is context, not a tool.** The brief allows one tool, and a recall tool would cost a model round-trip and depend on the model choosing to call it. A lookup in code takes about a millisecond and cannot be skipped.
 
-**Dates are computed, never inferred.** Models are unreliable at calendar arithmetic, and a wrong date recalls the wrong conversation. Ambiguity is kept rather than guessed: said on a Thursday, "last Tuesday" resolves to both candidate Tuesdays and the lookup uses whichever has a record.
+**Dates are computed, never inferred.** Models are unreliable at calendar arithmetic, and a wrong date recalls the wrong conversation.
 
-**Two layers of recall instead of embeddings.** Dates and keywords find turns precisely; the timeline lets the model match loose references ("the database thing") itself. At one person's scale that beats cosine similarity and needs no second API key or index.
+**A record on a date is not proof the user meant that date.** Said on a Thursday, "last Tuesday" has two readings. If only one has records, it is used and named. If both do, the topic decides ("…about Postgres hosting"); if it cannot, both are shown in brief and the model asks.
 
-**"Nothing recorded" is a result.** On an empty date the model is told so, with the nearest recorded days and any topic match. Told nothing, a model tends to invent a memory. Ask about the wrong day and it answers "nothing on Friday, but on Tuesday you asked…".
+**Two layers of recall instead of embeddings.** Dates and keywords find turns precisely; the timeline lets the model match loose references itself. At one person's scale this needs no second key or index.
 
-**Then versus now.** Memory is authoritative about what was said, never about what is true. The prompt makes the model restate the old claim, re-search each part at its primary source, and report changed / unchanged / could not verify.
+**"Nothing recorded" is a result.** On an empty date the model is told so, with the nearest recorded days and any topic match. Told nothing, a model tends to invent a memory.
 
-**Speed.** No model call runs before the answer starts, and Groq's inference is fast. The prompt is ordered so everything before the new message is byte-identical to the previous request, which lets the provider's automatic prompt caching apply; that is why each turn's context block is stored and replayed verbatim. Search results are not replayed in later turns; the answer and its links are.
+**Then versus now, claim by claim.** Memory is authoritative about what was said, never about what is true. A recalled turn arrives with its claims as a numbered list; the model re-searches each and reports changed, unchanged or could not verify.
 
-**One key, free to run.** Groq runs the searches on its side, so there is one API key and one streamed request, and its free tier is enough to try the agent. The cost: citations are links the model writes, not passage-level citations checked by the API. The prompt restricts links to pages from the search results, and the source list is read back out of the answer (falling back to the pages searched if the answer has no links).
+**Model-written citations are checked, not trusted.** Groq returns search results but not passage-level citations, so the model writes the links. The app labels each one: returned by this answer's search, carried over from a recalled answer, a different page on a searched site, or not in the results at all. It does not claim a page supports a statement; it shows where each link came from.
+
+**Everything is inspectable.** Under each answer: the dates read, turns recalled, claims to re-check, searches run, the link check, and the exact context the model received.
+
+**Speed.** No model call runs before the answer starts. Each turn's context block is stored and replayed verbatim, so the prompt before the new message is byte-identical to the previous request (tested), which is what provider-side prompt caching needs. The page shows the cached-token count per answer, so the benefit is observed, not assumed.
+
+## Evaluation
+
+`npm run eval` runs 46 scenarios through date reading and recall with no model, so results are exact: **44 / 46** (`eval/recall-results.md`). The two misses are paraphrases sharing no word with the stored turn; the timeline exists for those. Building the set exposed two bugs, now fixed: a date whose only conversation was off-topic hid the right one, and filler words matched unrelated turns. `npm run eval:live` asks nine questions of the live model and web and checks behaviour with rules: right day recalled, gaps admitted, no needless searches, links grounded.
 
 ## Considered and rejected
 
-- **A model call to route or rewrite each message.** Adds latency to every turn to save tokens on a few.
-- **A vector database.** A second key, an index to keep in sync, and worse precision than a date for "on 3 November".
-- **My own search stack (search API + page fetcher + reranker).** More control over grounding, but a second key and much more code. It is the first thing I would revisit.
-- **An agent framework.** The loop is about 200 lines; a framework would hide the prompt assembly, which is the design.
-- **Re-checking stale answers automatically.** It spends the user's money unasked. The start screen instead offers stale answers as one-click prompts.
+- **A model call to route or rewrite each message.** Latency on every turn to help a few.
+- **A vector database.** A second key and an index to sync, and less precise than a date.
+- **My own search stack.** More control over grounding, but a second key and much more code. First thing I would revisit.
+- **A "verified" badge on claims.** It would need the app to fetch and read each page; pricing pages are often script-rendered, so it would fail unpredictably.
+- **Re-checking stale answers automatically.** It spends the user's quota unasked. The start screen offers them as one-click prompts.
 
 ## With another week
 
-- **A graded eval set**: scripted histories replayed with a simulated clock (`AGENT_NOW` exists for this), scored on recall accuracy, honesty on empty dates, and correctness of the "changed" verdicts.
-- **A claim ledger**: store each volatile fact as a row with its source, so re-checks diff claim by claim and can run as a scheduled watch that speaks up only when something changed.
-- **Recall at larger scale**: embeddings as a third layer once history outgrows the timeline.
-- **Verified citations**: check each cited URL against the search results returned for that turn, and flag any link that was not among them.
+- **Change watch**: re-check recorded claims on a schedule and speak up only when one changed.
+- **Page-level verification**: fetch cited pages and confirm the quoted figure appears.
+- **A larger live eval** with a second model as grader, and embeddings once history outgrows the timeline.
