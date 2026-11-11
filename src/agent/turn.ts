@@ -63,6 +63,10 @@ function explain(error: unknown): string {
   if (error instanceof Groq.RateLimitError) {
     return "Groq's rate limit was reached. Wait a moment and send the message again.";
   }
+  if (error instanceof Groq.NotFoundError) {
+    // Groq answers 404 when the model name is unknown or the key has no access to it.
+    return `Groq could not find what was requested: ${error.message}. Check AGENT_MODEL and DIGEST_MODEL in .env (the default answering model is "groq/compound").`;
+  }
   if (error instanceof Groq.BadRequestError) {
     return `The model rejected the request: ${error.message}`;
   }
@@ -70,7 +74,7 @@ function explain(error: unknown): string {
     return "Could not reach the model. Check the network connection and try again.";
   }
   if (error instanceof Groq.APIError) {
-    return `The model service returned an error (${error.status ?? "unknown"}). Try again shortly.`;
+    return `Groq returned an error (${error.status ?? "unknown"}): ${error.message}`;
   }
   if (error instanceof Error && /GROQ_API_KEY|api[_ ]?key|apiKey/i.test(error.message)) {
     return "No Groq API key was found. Copy .env.example to .env, set GROQ_API_KEY, and restart.";
@@ -165,6 +169,7 @@ export async function runTurn(deps: TurnDeps, request: TurnRequest): Promise<voi
     } else {
       status = "error";
       failure = explain(error);
+      console.error(`[turn] ${config.model} failed:`, error);
     }
   }
   stream.finish();
